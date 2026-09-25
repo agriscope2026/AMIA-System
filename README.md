@@ -22,21 +22,19 @@ Supabase provides both the PostgreSQL database and the API server for this appli
 
 ## Authentication, users, comments, and audit history
 
-Run migrations `001_program_workflows.sql`, `002_activity_step_remarks.sql`, and `003_auth_collaboration.sql` in order. Deploy the invitation function with the Supabase CLI:
+Run migrations `001_program_workflows.sql`, `002_activity_step_remarks.sql`, `003_auth_collaboration.sql`, and `004_account_roles.sql` in order. Deploy the account function with the Supabase CLI:
 
 ```bash
-supabase functions deploy invite-program-user
+supabase functions deploy create-managed-user
 ```
 
-Create the first user in Supabase Authentication, then make that user an admin for a program from the SQL editor. Replace the email and program acronym as needed:
+On a fresh database, the first account created from the app's **Create an account** page is automatically assigned `superadmin`. On an existing database, create a user in Supabase Authentication and promote it manually:
 
 ```sql
-insert into public.program_members (program_id, user_id, role)
-select p.id, u.id, 'admin'
-from public.programs p
-cross join auth.users u
-where p.acronym = 'AMIA' and u.email = 'admin@example.com'
-on conflict (program_id, user_id) do update set role = 'admin';
+update public.profiles
+set system_role = 'superadmin'
+from auth.users u
+where profiles.id = u.id and u.email = 'admin@example.com';
 ```
 
-Admins can invite `Editor` and `Viewer` users from **Settings > Users & organizations**. Editors can update existing workflow steps, activity position, remarks, and threaded comments. Viewers can read programs and activities. All database writes are protected by Supabase row-level security, and changes to programs, workflow steps, activities, and comments are recorded in `audit_logs` for program admins.
+Users can create ordinary accounts from the login page. Superadmins can create `Superadmin`, `Program admin`, and `Viewer` accounts. Program admins can create `Viewer` accounts for their selected program. Program admins can customize their programs and activities; viewers can read and comment. All database writes are protected by Supabase row-level security, and changes to programs, workflow steps, activities, and comments are recorded in `audit_logs`.

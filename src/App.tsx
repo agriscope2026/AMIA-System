@@ -11,7 +11,6 @@ import {
   GripVertical,
   ImagePlus,
   LayoutDashboard,
-  List,
   Plus,
   Save,
   Search,
@@ -24,8 +23,8 @@ import {
   X,
 } from "lucide-react";
 import "./App.css";
-import { createActivity as createDatabaseActivity, createComment, createWorkflowStep, databaseConfigured, deleteActivity as deleteDatabaseActivity, getAuthSession, inviteProgramUser, loadActivities, loadAuditLogs, loadComments, loadMembers, loadPrograms, loadProfile, loadWorkflowSteps, signIn, signOut, subscribeToAuth, updateActivity as updateDatabaseActivity, updateProgram as updateDatabaseProgram, updateWorkflowStep } from "./lib/database";
-import type { ActivityComment, AppProfile, AuditLog, ProgramMember } from "./lib/database";
+import { createActivity as createDatabaseActivity, createManagedUser, createProgram, createWorkflowStep, databaseConfigured, deleteActivity as deleteDatabaseActivity, getAuthSession, loadActivities, loadAdminDatabaseTables, loadAuditLogs, loadMembers, loadPrograms, loadProfile, loadWorkflowSteps, manageProgramUser, signIn, signOut, subscribeToAuth, updateActivity as updateDatabaseActivity, updateProgram as updateDatabaseProgram, updateWorkflowStep } from "./lib/database";
+import type { AppProfile, AuditLog, ProgramMember } from "./lib/database";
 
 type WorkflowStep = {
   id: string;
@@ -61,10 +60,12 @@ type Activity = {
   endDate: string;
   budget: number;
   spent: number;
+  activityDesign?: string;
   status: string;
   currentStep: string;
   currentSubStep?: string;
   stepRemarks?: Record<string, string>;
+  completedSubSteps?: Record<string, string[]>;
 };
 
 type LocalDraftState = {
@@ -73,10 +74,12 @@ type LocalDraftState = {
   steps: WorkflowStep[];
   activities: Activity[];
   organizations: string[];
-  comments?: ActivityComment[];
 };
 
 const localDraftKey = "da-rfo-car-tracking-draft";
+const localAccountsKey = "da-rfo-car-tracking-accounts";
+const localSessionKey = "da-rfo-car-tracking-session";
+type LocalAccount = { email: string; password: string; fullName: string; systemRole: "superadmin" | "user"; programRole?: "program_admin" | "viewer"; programId?: string };
 
 function readLocalDraft(): Partial<LocalDraftState> {
   if (typeof window === "undefined") return {};
@@ -85,6 +88,25 @@ function readLocalDraft(): Partial<LocalDraftState> {
   } catch {
     return {};
   }
+}
+
+function readLocalSessionAccount(): LocalAccount | null {
+  if (typeof window === "undefined" || databaseConfigured) return null;
+  const email = window.localStorage.getItem(localSessionKey);
+  const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
+  return accounts.find((account) => account.email === email) ?? null;
+}
+
+function readLocalProgramMembers(programId: string): ProgramMember[] {
+  if (typeof window === "undefined") return [];
+  const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
+  return accounts.filter((account) => account.programId === programId && account.programRole).map((account, index) => ({
+    id: `local-member-${programId}-${index}`,
+    program_id: programId,
+    user_id: `local-user-${account.email}`,
+    role: account.programRole === "program_admin" ? "program_admin" : "viewer",
+    profile: { id: `local-user-${account.email}`, full_name: account.fullName, email: account.email, system_role: "user" },
+  }));
 }
 
 const amiaWorkflow: WorkflowStep[] = [
@@ -282,6 +304,18 @@ const fourKWorkflow: WorkflowStep[] = [
   },
 ];
 
+const withSampleSubSteps = (workflow: WorkflowStep[]) =>
+  workflow.map((step) => ({
+    ...step,
+    subSteps: step.subSteps?.length
+      ? [...step.subSteps]
+      : [
+          `Prepare ${step.title}`,
+          `Complete ${step.title}`,
+          `Record ${step.title} outcome`,
+        ],
+  }));
+
 const sampleActivities: Record<string, Activity[]> = {
   amia: [
     {
@@ -358,7 +392,7 @@ const samplePrograms: ProgramConfig[] = [
     primary: "#1c6653",
     accent: "#d8a642",
     logo: "",
-    steps: amiaWorkflow,
+    steps: withSampleSubSteps(amiaWorkflow),
   },
   {
     id: "4k",
@@ -373,7 +407,7 @@ const samplePrograms: ProgramConfig[] = [
     primary: "#315b72",
     accent: "#d6a13f",
     logo: "",
-    steps: fourKWorkflow,
+    steps: withSampleSubSteps(fourKWorkflow),
   },
 ];
 
@@ -387,7 +421,9 @@ const mapDatabaseStep = (step: import("./lib/database").DatabaseWorkflowStep): W
   status: step.status_tag,
   isOptional: step.is_optional,
   active: step.is_active,
-  subSteps: step.sub_steps ?? [],
+  subSteps: step.sub_steps?.length
+    ? step.sub_steps
+    : [`Prepare ${step.title}`, `Complete ${step.title}`, `Record ${step.title} outcome`],
 });
 
 const mapDatabaseActivity = (activity: import("./lib/database").DatabaseActivity, steps: WorkflowStep[]): Activity => ({
@@ -398,10 +434,12 @@ const mapDatabaseActivity = (activity: import("./lib/database").DatabaseActivity
   endDate: activity.target_end_date ?? "",
   budget: Number(activity.approved_budget),
   spent: Number(activity.recorded_spending),
+  activityDesign: activity.activity_design ?? "",
   status: getActivityStatus(steps, steps.find((step) => step.id === activity.current_step_id)?.title ?? steps[0]?.title ?? "", activity.current_sub_step ?? ""),
   currentStep: steps.find((step) => step.id === activity.current_step_id)?.title ?? steps[0]?.title ?? "",
   currentSubStep: activity.current_sub_step ?? "",
   stepRemarks: activity.step_remarks ?? {},
+  completedSubSteps: {},
 });
 
 function getActivityStatus(workflow: WorkflowStep[], currentStep: string, currentSubStep: string) {
@@ -434,49 +472,53 @@ const mapDatabaseProgram = (program: import("./lib/database").DatabaseProgram, s
 
 function App() {
   const localDraft = readLocalDraft();
+  const localSessionAccount = readLocalSessionAccount();
   const [programOptions, setProgramOptions] = useState<ProgramConfig[]>(localDraft.programOptions ?? samplePrograms);
   const [program, setProgram] = useState<ProgramConfig>(localDraft.program ?? samplePrograms[0]);
   const [steps, setSteps] = useState<WorkflowStep[]>(
-    localDraft.steps ?? amiaWorkflow.map((step) => ({
-      ...step,
-      subSteps: step.subSteps ?? [
-        `Prepare ${step.title}`,
-        `Complete ${step.title}`,
-        `Record ${step.title} outcome`,
-      ],
-    })),
+    localDraft.steps ?? withSampleSubSteps(amiaWorkflow),
   );
   const [activities, setActivities] = useState<Activity[]>(
     localDraft.activities ?? sampleActivities.amia,
+  );
+  const [activitiesByProgram, setActivitiesByProgram] = useState<Record<string, Activity[]>>(() =>
+    Object.fromEntries(Object.entries(sampleActivities).map(([id, records]) => [id, records])),
   );
   const [selectedId, setSelectedId] = useState("amia-procurement");
   const [showStepDialog, setShowStepDialog] = useState(false);
   const [stepDialogEditing, setStepDialogEditing] = useState(false);
   const [selectedActivityId, setSelectedActivityId] = useState("amia-act-1");
+  const [expandedTimelineSteps, setExpandedTimelineSteps] = useState<Record<string, boolean>>({});
+  const [pendingTimelineStep, setPendingTimelineStep] = useState<{ stepTitle: string; subStep: string; shouldComplete: boolean } | null>(null);
   const [remarkDrafts, setRemarkDrafts] = useState<Record<string, string>>({});
   const [session, setSession] = useState<Awaited<ReturnType<typeof getAuthSession>>>(null);
   const [authReady, setAuthReady] = useState(!databaseConfigured);
-  const [profile, setProfile] = useState<AppProfile | null>(null);
-  const [programRole, setProgramRole] = useState<ProgramMember["role"]>(databaseConfigured ? "viewer" : "admin");
+  const [localAuthenticated, setLocalAuthenticated] = useState(() => Boolean(localSessionAccount));
+  const [profile, setProfile] = useState<AppProfile | null>(localSessionAccount ? { id: "local-user", full_name: localSessionAccount.fullName, email: localSessionAccount.email, system_role: localSessionAccount.systemRole } : null);
+  const [programRole, setProgramRole] = useState<ProgramMember["role"]>(localSessionAccount?.programRole ?? (databaseConfigured ? "viewer" : "program_admin"));
+  const [systemRole, setSystemRole] = useState<"superadmin" | "user">(localSessionAccount?.systemRole ?? "user");
   const [members, setMembers] = useState<ProgramMember[]>([]);
-  const [comments, setComments] = useState<ActivityComment[]>(localDraft.comments ?? []);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
-  const [inviteForm, setInviteForm] = useState({ email: "", fullName: "", role: "editor" as "editor" | "viewer" });
-  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [accountForm, setAccountForm] = useState({ email: "", fullName: "", password: "", role: "viewer" as "superadmin" | "program_admin" | "viewer" });
+  const [programForm, setProgramForm] = useState({ title: "", acronym: "", agency: "Department of Agriculture", office: "", description: "", beneficiaries: "", units: "", adminFullName: "", adminEmail: "", adminPassword: "" });
   const [showActivityDialog, setShowActivityDialog] = useState(false);
+  const [activityDialogTab, setActivityDialogTab] = useState<"timeline" | "design" | "workflow">("workflow");
+  const [showProgramAdminDialog, setShowProgramAdminDialog] = useState(false);
+  const [showProgramDetailDialog, setShowProgramDetailDialog] = useState(false);
+  const [showProgramCreateDialog, setShowProgramCreateDialog] = useState(false);
+  const [programDialogEditing, setProgramDialogEditing] = useState(false);
+  const [programDialogTab, setProgramDialogTab] = useState<"details" | "admins">("details");
+  const [memberDialog, setMemberDialog] = useState<ProgramMember | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "details" | "workflow" | "activities" | "settings"
+    "dashboard" | "programs" | "details" | "workflow" | "activities" | "settings" | "database"
   >("dashboard");
   const [settingsSection, setSettingsSection] = useState<"organizations" | "fund-workflow" | "audit">("organizations");
   const [organizations, setOrganizations] = useState(localDraft.organizations ?? ["AMIA Program Unit", "Procurement Management Unit", "Budget and Finance Division"]);
   const [organizationDraft, setOrganizationDraft] = useState("");
-  const [activityView, setActivityView] = useState<"timeline" | "table">(
-    "table",
-  );
+  const [activityView] = useState<"timeline" | "table">("table");
   const [activitySearch, setActivitySearch] = useState("");
   const [showActivityForm, setShowActivityForm] = useState(false);
   const [editingActivityId, setEditingActivityId] = useState<string | null>(null);
@@ -487,41 +529,73 @@ function App() {
     endDate: "",
     budget: "",
     spent: "0",
+    activityDesign: "",
     status: "Planning" as Activity["status"],
     currentStep: "",
     currentSubStep: "",
   });
   const [saved, setSaved] = useState(false);
   const [notice, setNotice] = useState("");
+  const [databaseTables, setDatabaseTables] = useState<Record<string, Record<string, unknown>[]>>({});
+  const [selectedDatabaseTable, setSelectedDatabaseTable] = useState("programs");
+  const [databaseLoading, setDatabaseLoading] = useState(false);
   const activeSteps = useMemo(
     () => steps.filter((step) => step.active),
     [steps],
   );
   const selectedStep = steps.find((step) => step.id === selectedId) ?? steps[0];
   const today = new Date().toISOString().slice(0, 10);
+  const dashboardActivityMap = useMemo(() => ({ ...activitiesByProgram, [program.id]: activities }), [activities, activitiesByProgram, program.id]);
+  const dashboardActivities = systemRole === "superadmin" ? Object.values(dashboardActivityMap).flat() : activities;
   const dashboardTotals = useMemo(() => ({
-    activities: activities.length,
-    budget: activities.reduce((total, activity) => total + activity.budget, 0),
-    spent: activities.reduce((total, activity) => total + activity.spent, 0),
-    overdue: activities.filter((activity) => activity.endDate < today && activity.status !== "Completed").length,
-  }), [activities, today]);
+    activities: dashboardActivities.length,
+    budget: dashboardActivities.reduce((total, activity) => total + activity.budget, 0),
+    spent: dashboardActivities.reduce((total, activity) => total + activity.spent, 0),
+    overdue: dashboardActivities.filter((activity) => activity.endDate < today && activity.status !== "Completed").length,
+  }), [dashboardActivities, today]);
+  const dashboardProgramCount = systemRole === "superadmin" ? programOptions.length : 1;
   const dashboardStatusSummary = useMemo(() => {
     const counts = new Map<string, number>();
-    activities.forEach((activity) => counts.set(activity.status, (counts.get(activity.status) ?? 0) + 1));
+    dashboardActivities.forEach((activity) => counts.set(activity.status, (counts.get(activity.status) ?? 0) + 1));
     return Array.from(counts, ([label, count]) => ({ label, count, className: label === "Completed" ? "status-completed" : "status-progress" }));
-  }, [activities]);
+  }, [dashboardActivities]);
+  const loadDatabaseBrowser = async () => {
+    if (systemRole !== "superadmin") return;
+    setDatabaseLoading(true);
+    try {
+      if (databaseConfigured) {
+        setDatabaseTables(await loadAdminDatabaseTables());
+      } else {
+        const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
+        setDatabaseTables({
+          programs: programOptions as unknown as Record<string, unknown>[],
+          workflow_steps: programOptions.flatMap((item) => item.steps) as unknown as Record<string, unknown>[],
+          program_activities: Object.values(dashboardActivityMap).flat() as unknown as Record<string, unknown>[],
+          local_accounts: accounts.map((account) => Object.fromEntries(Object.entries(account).filter(([key]) => key !== "password"))),
+        });
+      }
+      setNotice("Database browser refreshed");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load database contents");
+    } finally {
+      setDatabaseLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (databaseConfigured) return;
+    const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
+    if (!accounts.some((account) => account.email === "superadmin@gmail.com")) {
+      window.localStorage.setItem(localAccountsKey, JSON.stringify([...accounts, { email: "superadmin@gmail.com", password: "password123", fullName: "System Superadmin", systemRole: "superadmin" }]));
+    }
     window.localStorage.setItem(localDraftKey, JSON.stringify({
       programOptions,
       program,
       steps,
       activities,
       organizations,
-      comments,
     } satisfies LocalDraftState));
-  }, [activities, comments, organizations, program, programOptions, steps]);
+  }, [activities, organizations, program, programOptions, steps]);
 
   useEffect(() => {
     if (!databaseConfigured) return;
@@ -540,7 +614,7 @@ function App() {
 
   useEffect(() => {
     if (!databaseConfigured || !session?.user) return;
-    void loadProfile(session.user.id).then(setProfile).catch(() => setProfile({ id: session.user.id, full_name: session.user.email ?? "User", email: session.user.email ?? "" }));
+    void loadProfile(session.user.id).then((loadedProfile) => { setProfile(loadedProfile); setSystemRole(loadedProfile.system_role ?? "user"); }).catch(() => setProfile({ id: session.user.id, full_name: session.user.email ?? "User", email: session.user.email ?? "" }));
   }, [session]);
 
   useEffect(() => {
@@ -552,58 +626,132 @@ function App() {
     void loadAuditLogs(program.id).then(setAuditLogs).catch(() => setAuditLogs([]));
   }, [program.id, session]);
 
-  useEffect(() => {
-    if (!selectedActivityId || !databaseConfigured || !session) return;
-    void loadComments(selectedActivityId).then(setComments).catch(() => setComments([]));
-  }, [selectedActivityId, session]);
-
-  const canEdit = !databaseConfigured || programRole === "admin" || programRole === "editor";
-  const canComment = !databaseConfigured || Boolean(session);
-  const isAdmin = !databaseConfigured || programRole === "admin";
+  const canEdit = !databaseConfigured || systemRole === "superadmin" || programRole === "program_admin" || programRole === "editor";
+  const isAdmin = !databaseConfigured || systemRole === "superadmin" || programRole === "program_admin";
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoginError("");
+    if (!databaseConfigured) {
+      const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
+      const account = accounts.find((item) => item.email === loginEmail.trim().toLowerCase() && item.password === loginPassword);
+      if (!account) {
+        setLoginError("Invalid local account. Create an account first or configure Supabase for production login.");
+        return;
+      }
+      setProfile({ id: "local-user", full_name: account.fullName, email: account.email, system_role: account.systemRole });
+      setSystemRole(account.systemRole);
+      setProgramRole(account.programRole ?? "viewer");
+      setLocalAuthenticated(true);
+      window.localStorage.setItem(localSessionKey, account.email);
+      return;
+    }
     try {
       await signIn(loginEmail.trim(), loginPassword);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Unable to sign in");
     }
   };
-  const addComment = async (activityId: string, stepId: string | null, parentId: string | null = null) => {
-    const body = commentDrafts[`${activityId}:${stepId ?? "activity"}:${parentId ?? "root"}`]?.trim();
-    if (!body) return;
-    if (databaseConfigured && session) {
-      try {
-        const created = await createComment({ activity_id: activityId, step_id: stepId, parent_id: parentId, author_id: session.user.id, body });
-        setComments((current) => [...current, created]);
-      } catch (error) {
-        setNotice(error instanceof Error ? error.message : "Could not add comment");
-        return;
+  const createAccount = async (forcedRole?: "superadmin" | "program_admin" | "viewer") => {
+    const role = forcedRole ?? (systemRole === "superadmin" ? accountForm.role : (programRole === "program_admin" ? accountForm.role : "viewer"));
+    const targetProgram = role === "superadmin" ? null : program.id;
+    try {
+      if (!databaseConfigured) {
+        const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
+        const email = accountForm.email.trim().toLowerCase();
+        if (accounts.some((item) => item.email === email)) throw new Error("That email already has an account");
+        window.localStorage.setItem(localAccountsKey, JSON.stringify([...accounts, { email, password: accountForm.password, fullName: accountForm.fullName.trim(), systemRole: "user", programRole: role === "program_admin" ? "program_admin" : "viewer", programId: targetProgram ?? undefined }]));
+      } else {
+        await createManagedUser(targetProgram, accountForm.email.trim(), accountForm.fullName.trim(), role);
       }
-    } else {
-      const created: ActivityComment = { id: `comment-${crypto.randomUUID()}`, activity_id: activityId, step_id: stepId, parent_id: parentId, author_id: "local-admin", body, created_at: new Date().toISOString(), author: { id: "local-admin", full_name: profile?.full_name ?? "Local admin", email: profile?.email ?? "" } };
-      setComments((current) => [...current, created]);
+      setNotice(`${role} account created`);
+      setAccountForm({ email: "", fullName: "", password: "", role: systemRole === "superadmin" ? "program_admin" : "viewer" });
+      if (targetProgram && databaseConfigured) setMembers(await loadMembers(targetProgram));
+      if (targetProgram && !databaseConfigured) setMembers(readLocalProgramMembers(targetProgram));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not create account");
     }
-    setCommentDrafts((current) => ({ ...current, [`${activityId}:${stepId ?? "activity"}:${parentId ?? "root"}`]: "" }));
   };
-  const renderStepComments = (activityId: string, stepId: string) => {
-    const rootComments = comments.filter((comment) => comment.activity_id === activityId && comment.step_id === stepId && !comment.parent_id);
-    return (
-      <div className="comment-thread">
-        <strong>Comments</strong>
-        {rootComments.map((comment) => (
-          <div className="comment-item" key={comment.id}>
-            <div><b>{comment.author?.full_name ?? "User"}</b><small>{new Date(comment.created_at).toLocaleString()}</small></div>
-            <p>{comment.body}</p>
-            {comments.filter((reply) => reply.parent_id === comment.id).map((reply) => <div className="comment-reply" key={reply.id}><b>{reply.author?.full_name ?? "User"}</b><p>{reply.body}</p></div>)}
-            {canComment && <div className="comment-compose compact"><input value={commentDrafts[`${activityId}:${stepId}:${comment.id}`] ?? ""} onChange={(event) => setCommentDrafts((current) => ({ ...current, [`${activityId}:${stepId}:${comment.id}`]: event.target.value }))} placeholder="Reply" /><button className="button secondary" onClick={() => void addComment(activityId, stepId, comment.id)}>Reply</button></div>}
-          </div>
-        ))}
-        {canComment && <div className="comment-compose"><input value={commentDrafts[`${activityId}:${stepId}:root`] ?? ""} onChange={(event) => setCommentDrafts((current) => ({ ...current, [`${activityId}:${stepId}:root`]: event.target.value }))} placeholder="Add a comment for this step" /><button className="button secondary" onClick={() => void addComment(activityId, stepId)}>Comment</button></div>}
-      </div>
-    );
+  const updateMemberAccount = async () => {
+    if (!memberDialog) return;
+    const fullName = accountForm.fullName.trim();
+    const role = accountForm.role === "program_admin" ? "program_admin" : "viewer";
+    try {
+      if (databaseConfigured) {
+        await manageProgramUser("update", program.id, memberDialog.user_id, { fullName, role });
+      } else {
+        const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
+        window.localStorage.setItem(localAccountsKey, JSON.stringify(accounts.map((account) => account.email === memberDialog.profile?.email ? { ...account, fullName, programRole: role } : account)));
+      }
+      setMembers((current) => current.map((member) => member.id === memberDialog.id ? { ...member, role, profile: { ...member.profile!, full_name: fullName } } : member));
+      setNotice("Account updated");
+      setMemberDialog(null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not update account");
+    }
   };
-
+  const deleteMemberAccount = async (member: ProgramMember) => {
+    if (!window.confirm(`Revoke ${member.profile?.full_name ?? "this user's"} access to ${program.acronym}?`)) return;
+    try {
+      if (databaseConfigured) {
+        await manageProgramUser("delete", program.id, member.user_id);
+      } else {
+        const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
+        window.localStorage.setItem(localAccountsKey, JSON.stringify(accounts.filter((account) => account.email !== member.profile?.email)));
+      }
+      setMembers((current) => current.filter((item) => item.id !== member.id));
+      setNotice("Program access revoked");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not revoke account access");
+    }
+  };
+  const createProgramForSuperadmin = async () => {
+    if (systemRole !== "superadmin" || !programForm.title.trim() || !programForm.acronym.trim()) {
+      setNotice("Program name and acronym are required");
+      return;
+    }
+    const programValues = {
+      title: programForm.title.trim(), acronym: programForm.acronym.trim().toUpperCase(), agency_title: programForm.agency.trim() || "Department of Agriculture", office_subtitle: programForm.office.trim() || null,
+      description: programForm.description.trim() || null, target_beneficiaries: programForm.beneficiaries.trim() || null, operating_units: programForm.units.split(",").map((item) => item.trim()).filter(Boolean), logo_url: null, theme_color: "#1c6653", accent_color: "#d8a642", is_active: true,
+    };
+    const defaultWorkflow = withSampleSubSteps(programValues.acronym === "4K" ? fourKWorkflow : amiaWorkflow);
+    try {
+      let createdProgramId = "";
+      if (databaseConfigured) {
+        const created = await createProgram(programValues);
+        createdProgramId = created.id;
+        const createdSteps = await Promise.all(defaultWorkflow.map((step, index) => createWorkflowStep({
+          program_id: created.id,
+          step_order: index + 1,
+          title: step.title,
+          description: step.description,
+          sub_steps: step.subSteps ?? [],
+          assigned_role: step.assignedRole,
+          required_documents: step.requiredDocuments.split(",").map((item) => item.trim()).filter(Boolean),
+          sla_days: step.slaDays,
+          status_tag: step.status,
+          is_optional: step.isOptional,
+          is_active: step.active,
+        })));
+        const mapped = mapDatabaseProgram(created, createdSteps.map(mapDatabaseStep));
+        setProgramOptions((current) => [...current, mapped]);
+        setProgram(mapped);
+        setSteps(mapped.steps);
+        setActivities([]);
+      } else {
+        createdProgramId = `program-${crypto.randomUUID()}`;
+        const mapped: ProgramConfig = { id: createdProgramId, title: programValues.title, acronym: programValues.acronym, agency: programValues.agency_title, office: programValues.office_subtitle ?? "", description: programValues.description ?? "", beneficiaries: programValues.target_beneficiaries ?? "", units: programValues.operating_units.join(", "), primary: programValues.theme_color, accent: programValues.accent_color, logo: "", steps: defaultWorkflow.map((step, index) => ({ ...step, id: `${createdProgramId}-step-${index + 1}` })) };
+        setProgramOptions((current) => [...current, mapped]);
+        setProgram(mapped);
+        setSteps(mapped.steps);
+        setActivities([]);
+      }
+      setProgramForm({ title: "", acronym: "", agency: "Department of Agriculture", office: "", description: "", beneficiaries: "", units: "", adminFullName: "", adminEmail: "", adminPassword: "" });
+      setShowProgramCreateDialog(false);
+      setNotice("Program created; add its program admin from the program details");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not create program");
+    }
+  };
   useEffect(() => {
     if (!databaseConfigured) return;
     let mounted = true;
@@ -615,13 +763,15 @@ function App() {
           const recordsSteps = await loadWorkflowSteps(record.id);
           return mapDatabaseProgram(record, recordsSteps.map(mapDatabaseStep));
         }));
+        const recordsByProgram = await Promise.all(records.map(async (record) => [record.id, (await loadActivities(record.id)).map((activity) => activity)] as const));
         const first = options[0];
-        const firstActivities = await loadActivities(first.id);
+        const firstActivities = recordsByProgram.find(([id]) => id === first.id)?.[1] ?? [];
         if (!mounted) return;
         setProgramOptions(options);
         setProgram(first);
         setSteps(first.steps);
         setActivities(firstActivities.map((activity) => mapDatabaseActivity(activity, first.steps)));
+        setActivitiesByProgram(Object.fromEntries(recordsByProgram.map(([id, records]) => [id, records.map((activity) => mapDatabaseActivity(activity, options.find((option) => option.id === id)?.steps ?? []))])));
         setSelectedId(first.steps[0]?.id ?? "");
         setSelectedActivityId(firstActivities[0]?.id ?? "");
         setNotice("Loaded from database");
@@ -648,11 +798,12 @@ function App() {
     field: "title" | "description" | "assignedRole" | "requiredDocuments" | "slaDays" | "status" | "isOptional" | "active" | "subSteps",
     value: string | number | boolean | string[],
   ) => {
-    setSteps((current) =>
-      current.map((step) =>
-        step.id === selectedId ? { ...step, [field]: value } : step,
-      ),
+    const nextSteps = steps.map((step) =>
+      step.id === selectedId ? { ...step, [field]: value } : step,
     );
+    setSteps(nextSteps);
+    setProgramOptions((programs) => programs.map((item) => item.id === program.id ? { ...item, steps: nextSteps } : item));
+    setProgram((currentProgram) => currentProgram.id === program.id ? { ...currentProgram, steps: nextSteps } : currentProgram);
     setSaved(false);
     if (databaseConfigured && !selectedId.startsWith("step-") && !stepDialogEditing) {
       const databaseField = { title: "title", description: "description", assignedRole: "assigned_role", requiredDocuments: "required_documents", slaDays: "sla_days", status: "status_tag", isOptional: "is_optional", active: "is_active", subSteps: "sub_steps" }[field];
@@ -690,6 +841,8 @@ function App() {
       nextSteps[index],
     ];
     setSteps(nextSteps);
+    setProgramOptions((programs) => programs.map((item) => item.id === program.id ? { ...item, steps: nextSteps } : item));
+    setProgram((current) => current.id === program.id ? { ...current, steps: nextSteps } : current);
     setSaved(false);
   };
   const addStep = () => {
@@ -713,7 +866,10 @@ function App() {
         setSelectedId(mapped.id);
       }).catch(() => setNotice("Could not create workflow step"));
     } else {
-      setSteps((current) => [...current, draftStep]);
+      const nextSteps = [...steps, draftStep];
+      setSteps(nextSteps);
+      setProgramOptions((programs) => programs.map((item) => item.id === program.id ? { ...item, steps: nextSteps } : item));
+      setProgram((currentProgram) => currentProgram.id === program.id ? { ...currentProgram, steps: nextSteps } : currentProgram);
       setSelectedId(id);
     }
     setActiveTab("settings");
@@ -722,18 +878,6 @@ function App() {
     setShowStepDialog(true);
     setSaved(false);
   };
-  const stepsWithSubSteps = (workflow: WorkflowStep[]) =>
-    workflow.map((step) => ({
-      ...step,
-      subSteps:
-        step.subSteps && step.subSteps.length > 0
-          ? [...step.subSteps]
-          : [
-              `Prepare ${step.title}`,
-              `Complete ${step.title}`,
-              `Record ${step.title} outcome`,
-            ],
-    }));
   const updateSubStep = (index: number, value: string) => {
     const subSteps = [...(selectedStep?.subSteps ?? [])];
     subSteps[index] = value;
@@ -786,7 +930,7 @@ function App() {
       return;
     }
     setProgram(nextProgram);
-    setSteps(stepsWithSubSteps(nextProgram.steps));
+    setSteps(withSampleSubSteps(nextProgram.steps));
     setActivities(sampleActivities[id].map((activity) => ({ ...activity })));
     setSelectedId(nextProgram.steps[0].id);
     setSelectedActivityId(sampleActivities[id][0]?.id ?? "");
@@ -815,6 +959,7 @@ function App() {
       endDate: newActivity.endDate || "2026-09-30",
       budget,
       spent,
+      activityDesign: newActivity.activityDesign.trim(),
       status: getActivityStatus(steps, newActivity.currentStep || steps[0]?.title || "Activity Planning", newActivity.currentSubStep || ""),
       currentStep: newActivity.currentStep || steps[0]?.title || "Activity Planning",
       currentSubStep: newActivity.currentSubStep || steps.find((step) => step.title === (newActivity.currentStep || steps[0]?.title))?.subSteps?.[0] || "",
@@ -842,6 +987,7 @@ function App() {
         current_step_id: currentStepId,
         current_sub_step: activity.currentSubStep ?? null,
         step_remarks: activity.stepRemarks ?? {},
+        activity_design: activity.activityDesign ?? "",
       };
       if (editingActivityId) {
         void updateDatabaseActivity(editingActivityId, databaseValues).catch(() => setNotice("Activity updated locally; database update failed"));
@@ -859,6 +1005,7 @@ function App() {
       endDate: "",
       budget: "",
       spent: "0",
+      activityDesign: "",
       status: "Planning",
       currentStep: "",
       currentSubStep: "",
@@ -879,7 +1026,9 @@ function App() {
       status: activity.status,
       currentStep: activity.currentStep,
       currentSubStep: activity.currentSubStep ?? steps.find((step) => step.title === activity.currentStep)?.subSteps?.[0] ?? "",
+      activityDesign: activity.activityDesign ?? "",
     });
+    setActivityDialogTab("workflow");
     setShowActivityDialog(false);
     setShowActivityForm(true);
   };
@@ -903,19 +1052,6 @@ function App() {
       .includes(query);
   });
   const selectedActivityStep = steps.find((step) => step.title === selectedActivity?.currentStep);
-  const selectedActivitySubStep = selectedActivity?.currentSubStep || selectedActivityStep?.subSteps?.[0] || "";
-  const updateActivityStatus = (currentStep: string, currentSubStep = selectedActivity?.currentSubStep ?? "") => {
-    if (!selectedActivity) return;
-    const status = getActivityStatus(steps, currentStep, currentSubStep);
-    setActivities((current) =>
-      current.map((activity) =>
-        activity.id === selectedActivity.id
-          ? { ...activity, status, currentStep, currentSubStep }
-          : activity,
-      ),
-    );
-    setSaved(false);
-  };
   const saveActivityChanges = () => {
     if (!selectedActivity) return;
     const stepRemarks = { ...(selectedActivity.stepRemarks ?? {}) };
@@ -936,11 +1072,81 @@ function App() {
     setNotice("Activity changes saved");
     setSaved(false);
   };
+  const saveActivityDesign = () => {
+    if (!selectedActivity || !canEdit) return;
+    const activityDesign = selectedActivity.activityDesign ?? "";
+    setActivities((current) => current.map((activity) => activity.id === selectedActivity.id ? { ...activity, activityDesign } : activity));
+    if (databaseConfigured && !selectedActivity.id.startsWith(`${program.id}-act-`)) {
+      void updateDatabaseActivity(selectedActivity.id, { activity_design: activityDesign }).catch(() => setNotice("Design saved locally; database update failed"));
+    }
+    setNotice("Activity design saved");
+  };
+  const toggleTimelineStep = (activityId: string, stepId: string, defaultExpanded: boolean) => {
+    const key = `${activityId}:${stepId}`;
+    setExpandedTimelineSteps((current) => ({ ...current, [key]: !(current[key] ?? defaultExpanded) }));
+  };
+  const getCompletedSubSteps = (activity: Activity, step: WorkflowStep, stepIndex: number) => {
+    const explicit = activity.completedSubSteps?.[step.id];
+    if (explicit) return explicit;
+    const currentStepIndex = activeSteps.findIndex((item) => item.title === activity.currentStep);
+    const currentSubStepIndex = (activeSteps[currentStepIndex]?.subSteps ?? []).indexOf(activity.currentSubStep ?? "");
+    if (stepIndex < currentStepIndex) return step.subSteps ?? [];
+    if (stepIndex === currentStepIndex && currentSubStepIndex >= 0) return (step.subSteps ?? []).slice(0, currentSubStepIndex + 1);
+    return [];
+  };
+  const getActivityProgress = (activity: Activity) => {
+    const workflowSteps = activeSteps;
+    const totalSubSteps = workflowSteps.reduce((total, step) => total + (step.subSteps?.length ?? 0), 0);
+    if (totalSubSteps > 0) {
+      const completedSubSteps = workflowSteps.reduce((total, step, index) => total + getCompletedSubSteps(activity, step, index).length, 0);
+      return Math.round(Math.min(1, completedSubSteps / totalSubSteps) * 100);
+    }
+    const currentStepIndex = workflowSteps.findIndex((step) => step.title === activity.currentStep);
+    return activity.status === "Completed" ? 100 : Math.round(Math.max(0, currentStepIndex) / Math.max(1, workflowSteps.length) * 100);
+  };
+  const requestTimelineSubStepChange = (step: WorkflowStep, stepIndex: number, subStep: string) => {
+    if (!canEdit || !selectedActivity) return;
+    const completed = getCompletedSubSteps(selectedActivity, step, stepIndex);
+    const shouldComplete = !completed.includes(subStep);
+    if (shouldComplete) {
+      const subStepIndex = (step.subSteps ?? []).indexOf(subStep);
+      if (subStepIndex > 0 && !completed.includes(step.subSteps?.[subStepIndex - 1] ?? "")) {
+        setNotice("Complete the previous sub-step first");
+        return;
+      }
+    }
+    setPendingTimelineStep({ stepTitle: step.title, subStep, shouldComplete });
+  };
+  const confirmTimelineStepChange = () => {
+    if (!pendingTimelineStep) return;
+    const stepIndex = activeSteps.findIndex((step) => step.title === pendingTimelineStep.stepTitle);
+    const step = activeSteps[stepIndex];
+    if (!step || !selectedActivity) return;
+    const completedSubSteps = Object.fromEntries(activeSteps.map((item, index) => [
+      item.id,
+      getCompletedSubSteps(selectedActivity, item, index),
+    ]));
+    const current = completedSubSteps[step.id] ?? [];
+    completedSubSteps[step.id] = pendingTimelineStep.shouldComplete
+      ? [...current, pendingTimelineStep.subStep]
+      : current.filter((item) => item !== pendingTimelineStep.subStep);
+    const lastCompletedStepIndex = activeSteps.reduce((last, item, index) =>
+      (item.subSteps ?? []).length > 0 && completedSubSteps[item.id]?.length === item.subSteps?.length ? index : last, -1);
+    const activeStepIndex = Math.min(lastCompletedStepIndex + 1, activeSteps.length - 1);
+    const activeStep = activeSteps[activeStepIndex];
+    const activeSubStep = completedSubSteps[activeStep?.id ?? ""]?.at(-1) ?? "";
+    setActivities((currentActivities) => currentActivities.map((activity) => activity.id === selectedActivity.id
+      ? { ...activity, completedSubSteps, currentStep: activeStep?.title ?? activity.currentStep, currentSubStep: activeSubStep, status: getActivityStatus(steps, activeStep?.title ?? activity.currentStep, activeSubStep) }
+      : activity));
+    setPendingTimelineStep(null);
+    setPendingTimelineStep(null);
+  };
   const navigateTo = (
-    tab: "dashboard" | "details" | "workflow" | "activities" | "settings",
+    tab: "dashboard" | "programs" | "details" | "workflow" | "activities" | "settings" | "database",
     message: string,
   ) => {
     setActiveTab(tab);
+    if (tab === "database") void loadDatabaseBrowser();
     setNotice(message);
   };
   const addOrganization = () => {
@@ -949,15 +1155,15 @@ function App() {
     setOrganizationDraft("");
     setNotice("Organization added");
   };
-  if (databaseConfigured && authReady && !session) {
+  if (authReady && (databaseConfigured ? !session : !localAuthenticated)) {
     return (
       <main className="auth-shell">
         <form className="auth-card" onSubmit={handleLogin}>
           <p className="eyebrow">DA-RFO-CAR</p>
-          <h1>Program workspace</h1>
-          <p>Sign in to manage programs, activities, workflow steps, and collaboration.</p>
+          <h1>Welcome back</h1>
+          <p>{databaseConfigured ? "Sign in to manage programs, activities, workflow steps, and collaboration." : "Local development mode. Use the seeded superadmin credentials or an account created by an admin."}</p>
           <label>Email<input type="email" required value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} /></label>
-          <label>Password<input type="password" required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>
+          <label>Password<input type="password" minLength={8} required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>
           {loginError && <div className="auth-error">{loginError}</div>}
           <button className="button primary" type="submit">Sign in</button>
         </form>
@@ -977,7 +1183,7 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <div className="breadcrumbs">
-            <strong className="current-program-label">{program.acronym} · {program.title}</strong>
+            <strong className="current-program-label">{systemRole === "superadmin" ? "DA-RFO-CAR Tracking System" : `${program.acronym} · ${program.title}`}</strong>
           </div>
           <div className="top-actions">
             <nav className="top-nav" aria-label="Program builder views">
@@ -991,7 +1197,19 @@ function App() {
               >
                 <LayoutDashboard size={14} /> Dashboard
               </button>
-              <button
+              {systemRole === "superadmin" && <button
+                className={activeTab === "programs" ? "top-nav-item active" : "top-nav-item"}
+                onClick={() => navigateTo("programs", "Programs opened")}
+              >
+                <ClipboardList size={14} /> Programs
+              </button>}
+              {systemRole === "superadmin" && <button
+                className={activeTab === "database" ? "top-nav-item active" : "top-nav-item"}
+                onClick={() => navigateTo("database", "Database browser opened")}
+              >
+                <Table2 size={14} /> Database
+              </button>}
+              {systemRole !== "superadmin" && <button
                 className={
                   activeTab === "activities"
                     ? "top-nav-item active"
@@ -1000,7 +1218,7 @@ function App() {
                 onClick={() => navigateTo("activities", "Activities opened")}
               >
                 <Table2 size={14} /> Activities
-              </button>
+              </button>}
               <button
                 className={
                   activeTab === "settings"
@@ -1012,21 +1230,7 @@ function App() {
                 <Settings size={14} /> Settings
               </button>
             </nav>
-            <label className="program-switcher">
-              <span>Editing</span>
-              <select
-                value={program.id}
-                onChange={(event) => selectProgram(event.target.value)}
-                aria-label="Select sample program"
-              >
-                {programOptions.map((sample) => (
-                  <option key={sample.id} value={sample.id}>
-                    {sample.acronym} - {sample.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
+            {systemRole !== "superadmin" && <button
               className="icon-button"
               aria-label="Search"
               onClick={() =>
@@ -1037,7 +1241,7 @@ function App() {
               }
             >
               <Search size={18} />
-            </button>
+            </button>}
             <button
               className="icon-button"
               aria-label="Notifications"
@@ -1048,23 +1252,23 @@ function App() {
             </button>
             <button
               className="header-avatar"
-              onClick={() => { setActiveTab("details"); setProfileOpen(true); }}
+              onClick={() => setNotice(profile?.email ?? "Profile opened")}
               aria-label="Open profile"
             >
               {(profile?.full_name ?? "MA").slice(0, 2).toUpperCase()}
             </button>
-            {session && <button className="button secondary" onClick={() => void signOut()}>Sign out</button>}
+            {(session || localAuthenticated) && <button className="button secondary" onClick={() => { if (databaseConfigured) void signOut(); else { window.localStorage.removeItem(localSessionKey); setLocalAuthenticated(false); } }}>Sign out</button>}
           </div>
         </header>
         <div className="content-wrap">
           <section className="page-heading">
             <div>
               <p className="eyebrow">
-                {activeTab === "dashboard" ? "Program dashboard" : `${program.acronym} workspace`}
+                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "programs" ? "Programs" : activeTab === "database" ? "Superadmin tools" : `${program.acronym} workspace`}
               </p>
-              <h1>{activeTab === "dashboard" ? "Program dashboard" : activeTab === "details" ? "Program details" : activeTab === "activities" ? "Activity register" : "Settings"}</h1>
+              <h1>{activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "programs" ? "Programs" : activeTab === "details" ? "Program details" : activeTab === "activities" ? "Activity register" : activeTab === "database" ? "Database browser" : "Settings"}</h1>
               <p className="page-intro">
-                {activeTab === "dashboard" ? "Monitor activity totals, utilization, and overdue work." : "Manage the program's operational sequence and fund-tracking rules."}
+                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "Monitor all programs, activities, budgets, and user access." : "Monitor activity totals, utilization, and overdue work.") : activeTab === "programs" ? "Create programs, edit program details, and assign program administrators." : "Manage the program's operational sequence and fund-tracking rules."}
               </p>
             </div>
             <div className="heading-actions">
@@ -1085,22 +1289,45 @@ function App() {
           </section>
           {activeTab === "dashboard" ? (
             <div className="dashboard-grid">
-              <section className="dashboard-panel dashboard-program-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Program profile</p><h2>{program.title}</h2></div></div><div className="program-summary"><div className="program-summary-copy">{program.logo ? <img src={program.logo} alt="" /> : <ShieldCheck size={28} />}<div><strong>{program.acronym}</strong><span>{program.agency}</span><span>{program.office}</span></div></div><div><small>Beneficiaries</small><strong>{program.beneficiaries}</strong></div><p>{program.description}</p></div></section>
-              <div className="dashboard-card dashboard-total"><span className="dashboard-label">Total activities</span><strong>{dashboardTotals.activities}</strong><small>Registered in {program.acronym}</small></div>
+              <section className="dashboard-panel dashboard-program-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" ? "System portfolio" : "Program profile"}</p><h2>{systemRole === "superadmin" ? "All programs" : program.title}</h2></div><span className="dashboard-muted">{dashboardProgramCount} program{dashboardProgramCount === 1 ? "" : "s"}</span></div>{systemRole === "superadmin" ? <div className="superadmin-program-list">{programOptions.map((item) => <button className="superadmin-program-row" key={item.id} onClick={() => selectProgram(item.id)}><span className="program-summary-copy">{item.logo ? <img src={item.logo} alt="" /> : <ShieldCheck size={28} />}<span><strong>{item.acronym}</strong><small>{item.title}</small></span></span><span><b>{(activitiesByProgram[item.id] ?? []).length}</b><small>activities</small></span><ChevronDown size={17} /></button>)}</div> : <div className="program-summary"><div className="program-summary-copy">{program.logo ? <img src={program.logo} alt="" /> : <ShieldCheck size={28} />}<div><strong>{program.acronym}</strong><span>{program.agency}</span><span>{program.office}</span></div></div><div><small>Beneficiaries</small><strong>{program.beneficiaries}</strong></div><p>{program.description}</p></div>}</section>
+              <div className="dashboard-card dashboard-total"><span className="dashboard-label">Total activities</span><strong>{dashboardTotals.activities}</strong><small>{systemRole === "superadmin" ? "Across all programs" : `Registered in ${program.acronym}`}</small></div>
               <div className="dashboard-card"><span className="dashboard-label">Approved budget</span><strong>₱{dashboardTotals.budget.toLocaleString()}</strong><small>Across all activities</small></div>
               <div className="dashboard-card"><span className="dashboard-label">Recorded spending</span><strong>₱{dashboardTotals.spent.toLocaleString()}</strong><small>{dashboardTotals.budget ? Math.round((dashboardTotals.spent / dashboardTotals.budget) * 100) : 0}% utilized</small></div>
               <div className="dashboard-card dashboard-overdue"><span className="dashboard-label">Overdue activities</span><strong>{dashboardTotals.overdue}</strong><small>Past target end date</small></div>
               <section className="dashboard-panel dashboard-analytics-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">At a glance</p><h2>Activity portfolio</h2></div><span className="dashboard-muted">Live data</span></div><div className="dashboard-chart-grid"><div className="chart-block"><div className="chart-heading"><strong>Activities by status</strong><span>{dashboardTotals.activities} total</span></div><div className="status-bars">{dashboardStatusSummary.map((status) => <div className="status-bar-row" key={status.label}><span>{status.label}</span><div className="status-bar-track"><i className={status.className} style={{ width: `${dashboardTotals.activities ? (status.count / dashboardTotals.activities) * 100 : 0}%` }} /></div><b>{status.count}</b></div>)}</div></div><div className="chart-block budget-chart"><div className="chart-heading"><strong>Budget utilization</strong><span>{dashboardTotals.budget ? Math.round((dashboardTotals.spent / dashboardTotals.budget) * 100) : 0}% used</span></div><div className="budget-gauge"><div className="budget-gauge-fill" style={{ width: `${dashboardTotals.budget ? Math.min(100, (dashboardTotals.spent / dashboardTotals.budget) * 100) : 0}%` }} /></div><div className="budget-legend"><span><i className="legend-spent" /> Spent <b>₱{dashboardTotals.spent.toLocaleString()}</b></span><span><i className="legend-remaining" /> Remaining <b>₱{Math.max(0, dashboardTotals.budget - dashboardTotals.spent).toLocaleString()}</b></span></div></div></div></section>
-              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Needs attention</p><h2>Overdue activities</h2></div><button className="button secondary" onClick={() => navigateTo("activities", "Overdue activities opened")}>View activities</button></div>{activities.filter((activity) => activity.endDate < today && activity.status !== "Completed").length ? <div className="overdue-list">{activities.filter((activity) => activity.endDate < today && activity.status !== "Completed").map((activity) => <button className="overdue-row" key={activity.id} onClick={() => { setSelectedActivityId(activity.id); setShowActivityDialog(true); }}><span className="overdue-dot" /><span><strong>{activity.name}</strong><small>{activity.location} · Due {activity.endDate}</small></span><span className="status-tag status-revision">{activity.status}</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No overdue activities</div>}</section>
-              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Program activity</p><h2>Current progress</h2></div><span className="dashboard-muted">{activities.length} activities</span></div><div className="dashboard-progress-list">{activities.slice(0, 5).map((activity) => <div className="dashboard-progress-row" key={activity.id}><div><strong>{activity.name}</strong><small>{getNumberedStep(steps, activity.currentStep)}</small></div><div className="dashboard-progress-bar"><span style={{ width: `${activity.budget ? Math.min(100, (activity.spent / activity.budget) * 100) : 0}%` }} /></div><b>{activity.budget ? Math.round((activity.spent / activity.budget) * 100) : 0}%</b></div>)}</div></section>
-              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Completed work</p><h2>Finished activities</h2></div><span className="dashboard-muted">{activities.filter((activity) => activity.status === "Completed").length} finished</span></div>{activities.filter((activity) => activity.status === "Completed").length ? <div className="finished-list">{activities.filter((activity) => activity.status === "Completed").map((activity) => <button className="finished-row" key={activity.id} onClick={() => { setSelectedActivityId(activity.id); setShowActivityDialog(true); }}><span className="finished-check"><Check size={13} /></span><span><strong>{activity.name}</strong><small>{activity.location} · Finished {activity.endDate}</small></span><span className="status-tag status-completed">Completed</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No finished activities</div>}</section>
+              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Needs attention</p><h2>Overdue activities</h2></div><button className="button secondary" onClick={() => navigateTo("activities", "Overdue activities opened")}>View activities</button></div>{dashboardActivities.filter((activity) => activity.endDate < today && activity.status !== "Completed").length ? <div className="overdue-list">{dashboardActivities.filter((activity) => activity.endDate < today && activity.status !== "Completed").map((activity) => <button className="overdue-row" key={activity.id} onClick={() => { setSelectedActivityId(activity.id); setShowActivityDialog(true); }}><span className="overdue-dot" /><span><strong>{activity.name}</strong><small>{activity.location} · Due {activity.endDate}</small></span><span className="status-tag status-revision">{activity.status}</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No overdue activities</div>}</section>
+              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" ? "Portfolio activity" : "Program activity"}</p><h2>Current progress</h2></div><span className="dashboard-muted">{dashboardActivities.length} activities</span></div><div className="dashboard-progress-list">{dashboardActivities.slice(0, 5).map((activity) => <div className="dashboard-progress-row" key={activity.id}><div><strong>{activity.name}</strong><small>{getNumberedStep(steps, activity.currentStep)}</small></div><div className="dashboard-progress-bar"><span style={{ width: `${activity.budget ? Math.min(100, (activity.spent / activity.budget) * 100) : 0}%` }} /></div><b>{activity.budget ? Math.round((activity.spent / activity.budget) * 100) : 0}%</b></div>)}</div></section>
+              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Completed work</p><h2>Finished activities</h2></div><span className="dashboard-muted">{dashboardActivities.filter((activity) => activity.status === "Completed").length} finished</span></div>{dashboardActivities.filter((activity) => activity.status === "Completed").length ? <div className="finished-list">{dashboardActivities.filter((activity) => activity.status === "Completed").map((activity) => <button className="finished-row" key={activity.id} onClick={() => { setSelectedActivityId(activity.id); setShowActivityDialog(true); }}><span className="finished-check"><Check size={13} /></span><span><strong>{activity.name}</strong><small>{activity.location} · Finished {activity.endDate}</small></span><span className="status-tag status-completed">Completed</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No finished activities</div>}</section>
+            </div>
+          ) : activeTab === "database" && systemRole === "superadmin" ? (
+            <div className="database-browser">
+              <div className="database-browser-header">
+                <div><p className="eyebrow">Read-only inspection</p><h2>Database contents</h2><p>Browse application records without editing or exposing credentials.</p></div>
+                <button className="button secondary" onClick={() => void loadDatabaseBrowser()} disabled={databaseLoading}>{databaseLoading ? "Refreshing..." : "Refresh"}</button>
+              </div>
+              <div className="database-browser-layout">
+                <nav className="database-table-list" aria-label="Database tables">
+                  {Object.keys(databaseTables).map((tableName) => <button className={selectedDatabaseTable === tableName ? "database-table-button active" : "database-table-button"} key={tableName} onClick={() => setSelectedDatabaseTable(tableName)}>{tableName}<span>{databaseTables[tableName].length}</span></button>)}
+                </nav>
+                <section className="database-records">
+                  <div className="database-records-heading"><strong>{selectedDatabaseTable}</strong><span>{databaseTables[selectedDatabaseTable]?.length ?? 0} records</span></div>
+                  {databaseTables[selectedDatabaseTable]?.length ? <div className="database-record-list">{databaseTables[selectedDatabaseTable].map((record, index) => <details className="database-record" key={String(record.id ?? index)}><summary>Record {index + 1}{record.id ? ` · ${String(record.id)}` : ""}</summary><pre>{JSON.stringify(record, null, 2)}</pre></details>)}</div> : <div className="empty-state">No records found. Click Refresh to load the latest contents.</div>}
+                </section>
+              </div>
             </div>
           ) : (
           <div className={`builder-layout ${activeTab === "activities" ? "activities-layout" : ""}`}>
             <section className="builder-panel">
-              {activeTab === "details" ? (
-                <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setProfileOpen(false); setActiveTab("dashboard"); }}>
-                <dialog open={profileOpen} className="form-section profile-dialog">
+              {activeTab === "programs" && !showProgramDetailDialog ? (
+                <div className="programs-page">
+                  <div className="section-title"><div><p className="eyebrow">Superadmin workspace</p><h2>All programs</h2><p>Select a program to view or edit its details.</p></div><button className="button primary" onClick={() => setShowProgramCreateDialog(true)}><Plus size={15} /> Create program</button></div>
+                  <div className="programs-list">
+                    {programOptions.map((item) => <button className={`program-list-row ${item.id === program.id ? "selected" : ""}`} key={item.id} onClick={() => { setProgram(item); setSteps(item.steps); setActivities(activitiesByProgram[item.id] ?? []); if (!databaseConfigured) setMembers(readLocalProgramMembers(item.id)); setProgramDialogEditing(false); setShowProgramDetailDialog(true); }}><span className="program-list-mark">{item.acronym.slice(0, 2)}</span><span><strong>{item.title}</strong><small>{item.acronym} · {item.agency}</small></span><span className="program-list-count">{(activitiesByProgram[item.id] ?? []).length} activities</span><ChevronDown size={18} /></button>)}
+                  </div>
+                </div>
+              ) : showProgramDetailDialog || activeTab === "details" ? (
+                <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowProgramDetailDialog(false); setActiveTab("programs"); }}>
+                <dialog open={showProgramDetailDialog} className="form-section profile-dialog">
                   <div className="section-title">
                     <div>
                       <p className="eyebrow">User profile</p>
@@ -1110,9 +1337,11 @@ function App() {
                         unit.
                       </p>
                     </div>
-                    <span className="step-number">01</span>
+                    <div className="detail-actions">{!programDialogEditing && programDialogTab === "details" && <button className="button secondary" onClick={() => setProgramDialogEditing(true)}>Edit program</button>}{programDialogEditing && <button className="button primary" onClick={() => { setProgramDialogEditing(false); setNotice("Program details saved"); }}><Save size={14} /> Save</button>}<span className="step-number">01</span></div>
                   </div>
-                  <button className="icon-button profile-dialog-close" aria-label="Close program details" onClick={() => { setProfileOpen(false); setActiveTab("dashboard"); }}><X size={17} /></button>
+                  <button className="icon-button profile-dialog-close" aria-label="Close program details" onClick={() => { setShowProgramDetailDialog(false); setActiveTab("programs"); }}><X size={17} /></button>
+                  <div className="program-dialog-tabs"><button className={programDialogTab === "details" ? "activity-view active" : "activity-view"} onClick={() => setProgramDialogTab("details")}>Program details</button><button className={programDialogTab === "admins" ? "activity-view active" : "activity-view"} onClick={() => setProgramDialogTab("admins")}>Admin accounts</button></div>
+                  {programDialogTab === "details" ? <>
                   <div className="logo-row">
                     <div className="logo-preview">
                       {program.logo ? (
@@ -1129,6 +1358,7 @@ function App() {
                         <input
                           type="file"
                           accept="image/png,image/jpeg"
+                          disabled={!programDialogEditing}
                           onChange={handleLogo}
                         />
                       </label>
@@ -1139,6 +1369,7 @@ function App() {
                       Program name
                       <input
                         value={program.title}
+                        disabled={!programDialogEditing}
                         onChange={(e) => updateProgram("title", e.target.value)}
                       />
                     </label>
@@ -1146,6 +1377,7 @@ function App() {
                       Acronym
                       <input
                         value={program.acronym}
+                        disabled={!programDialogEditing}
                         onChange={(e) =>
                           updateProgram("acronym", e.target.value)
                         }
@@ -1157,6 +1389,7 @@ function App() {
                       Agency title
                       <input
                         value={program.agency}
+                        disabled={!programDialogEditing}
                         onChange={(e) =>
                           updateProgram("agency", e.target.value)
                         }
@@ -1166,6 +1399,7 @@ function App() {
                       Regional office / subtitle
                       <input
                         value={program.office}
+                        disabled={!programDialogEditing}
                         onChange={(e) =>
                           updateProgram("office", e.target.value)
                         }
@@ -1176,6 +1410,7 @@ function App() {
                     Description & objectives
                     <textarea
                       value={program.description}
+                      disabled={!programDialogEditing}
                       onChange={(e) =>
                         updateProgram("description", e.target.value)
                       }
@@ -1187,6 +1422,7 @@ function App() {
                       Target beneficiaries
                       <input
                         value={program.beneficiaries}
+                        disabled={!programDialogEditing}
                         onChange={(e) =>
                           updateProgram("beneficiaries", e.target.value)
                         }
@@ -1196,6 +1432,7 @@ function App() {
                       Operating units / divisions
                       <input
                         value={program.units}
+                        disabled={!programDialogEditing}
                         onChange={(e) => updateProgram("units", e.target.value)}
                       />
                     </label>
@@ -1217,6 +1454,7 @@ function App() {
                         <input
                           type="color"
                           value={program.primary}
+                          disabled={!programDialogEditing}
                           onChange={(e) =>
                             updateProgram("primary", e.target.value)
                           }
@@ -1230,6 +1468,7 @@ function App() {
                         <input
                           type="color"
                           value={program.accent}
+                          disabled={!programDialogEditing}
                           onChange={(e) =>
                             updateProgram("accent", e.target.value)
                           }
@@ -1253,6 +1492,7 @@ function App() {
                       />
                     </span>
                   </label>
+                  </> : <div className="program-admins-panel"><div className="section-title"><div><p className="eyebrow">Access management</p><h2>Program administrators</h2><p>View, edit, or revoke admin access for {program.acronym}.</p></div><button className="button primary" onClick={() => setShowProgramAdminDialog(true)}><Plus size={15} /> Add admin</button></div><div className="program-admin-list">{members.filter((member) => member.role === "program_admin").map((member) => <div className="settings-row" key={member.id}><span>{member.profile?.full_name ?? "Unnamed admin"}</span><small>{member.profile?.email}</small><b>Program admin</b><button className="icon-button" aria-label="Edit program admin" onClick={() => { setAccountForm({ email: member.profile?.email ?? "", fullName: member.profile?.full_name ?? "", password: "", role: "program_admin" }); setMemberDialog(member); }}><Settings size={15} /></button><button className="icon-button danger" aria-label="Delete program admin" onClick={() => void deleteMemberAccount(member)}><Trash2 size={15} /></button></div>)}{members.filter((member) => member.role === "program_admin").length === 0 && <div className="empty-state">No program admin account assigned yet.</div>}</div></div>}
                 </dialog>
                 </div>
               ) : null}
@@ -1274,7 +1514,7 @@ function App() {
                       className="button primary"
                           onClick={() => {
                             setEditingActivityId(null);
-                            setNewActivity({ name: "", location: "", startDate: "", endDate: "", budget: "", spent: "0", status: "Planning", currentStep: steps[0]?.title ?? "", currentSubStep: steps[0]?.subSteps?.[0] ?? "" });
+                            setNewActivity({ name: "", location: "", startDate: "", endDate: "", budget: "", spent: "0", activityDesign: "", status: "Planning", currentStep: steps[0]?.title ?? "", currentSubStep: steps[0]?.subSteps?.[0] ?? "" });
                             setShowActivityForm(true);
                           }}
                       >
@@ -1282,12 +1522,7 @@ function App() {
                       </button>}
                   </div>
                   <div className="activity-tabs" role="tablist" aria-label="Activity views">
-                    <button className={activityView === "timeline" ? "activity-view active" : "activity-view"} onClick={() => setActivityView("timeline")}>
-                      <List size={15} /> Timeline
-                    </button>
-                    <button className={activityView === "table" ? "activity-view active" : "activity-view"} onClick={() => setActivityView("table")}>
-                      <Table2 size={15} /> Activity table
-                    </button>
+                    <span className="activity-view active"><Table2 size={15} /> Activity table</span>
                   </div>
                   {showActivityForm && (
                     <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowActivityForm(false); setEditingActivityId(null); }}>
@@ -1400,7 +1635,7 @@ function App() {
                           <button
                             key={activity.id}
                             className={`activity-card ${selectedActivity?.id === activity.id ? "selected" : ""}`}
-                            onClick={() => { setSelectedActivityId(activity.id); setShowActivityDialog(true); }}
+                            onClick={() => { setSelectedActivityId(activity.id); setActivityDialogTab("workflow"); setExpandedTimelineSteps({}); setPendingTimelineStep(null); setShowActivityDialog(true); }}
                           >
                             <div className="activity-card-top">
                               <strong>{activity.name}</strong>
@@ -1425,8 +1660,8 @@ function App() {
                       </div>
                       {selectedActivity && showActivityDialog && (
                         <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setSelectedActivityId(""); setShowActivityDialog(false); }}>
-                        <dialog open className="activity-detail activity-dialog">
-                          <div className="detail-heading">
+                        <dialog open className="activity-detail activity-dialog timeline-activity-dialog">
+                          <div className="detail-heading timeline-dialog-header">
                             <div>
                               <p className="eyebrow">Activity timeline</p>
                               <h2>{selectedActivity.name}</h2>
@@ -1442,9 +1677,15 @@ function App() {
                               <button className="icon-button" aria-label="Close activity" onClick={() => { setSelectedActivityId(""); setShowActivityDialog(false); }}><X size={17} /></button>
                             </div>
                           </div>
-                          <div className="fund-summary">
-                            <div>
-                              <small>Approved budget</small>
+                          <div className="activity-dialog-tabs" role="tablist" aria-label="Activity details">
+                            <button className={activityDialogTab === "timeline" ? "activity-dialog-tab active" : "activity-dialog-tab"} onClick={() => setActivityDialogTab("timeline")}>Timeline</button>
+                            <button className={activityDialogTab === "design" ? "activity-dialog-tab active" : "activity-dialog-tab"} onClick={() => setActivityDialogTab("design")}>Activity design</button>
+                          </div>
+                          {activityDialogTab === "timeline" ? (
+                          <div className="timeline-dialog-body">
+                          <div className="fund-summary timeline-summary">
+                          <div>
+                            <small>Approved budget</small>
                               <strong>
                                 ₱{selectedActivity.budget.toLocaleString()}
                               </strong>
@@ -1466,68 +1707,135 @@ function App() {
                               </strong>
                             </div>
                           </div>
+                          <div className="timeline-section-label">Workflow progress</div>
                           <div className="timeline">
                             {activeSteps.map((step, index) => {
                               const currentStepIndex = activeSteps.findIndex((item) => item.title === selectedActivity.currentStep);
                               const stepDone = index < currentStepIndex || selectedActivity.status === "Completed";
                               const stepCurrent = index === currentStepIndex && selectedActivity.status !== "Completed";
                               const currentSubStepIndex = (step.subSteps ?? []).indexOf(selectedActivity.currentSubStep ?? "");
+                              const subSteps = step.subSteps ?? [];
+                              const completedSubSteps = getCompletedSubSteps(selectedActivity, step, index);
+                              const allSubStepsDone = subSteps.length > 0
+                                ? completedSubSteps.length === subSteps.length
+                                : stepDone;
+                              const parentDone = stepDone || allSubStepsDone;
+                              const timelineStepKey = `${selectedActivity.id}:${step.id}`;
+                              const expanded = expandedTimelineSteps[timelineStepKey] ?? false;
                               return (
                               <div
-                                className={`timeline-step ${stepDone ? "complete" : "pending"} ${stepCurrent ? "current" : ""}`}
+                                className={`timeline-step ${parentDone ? "complete" : "pending"} ${stepCurrent ? "current" : ""} ${expanded ? "expanded" : "collapsed"}`}
                                 key={step.id}
                               >
                                 <div className="timeline-marker">
-                                  {stepDone ? (
+                                  {parentDone ? (
                                     <Check size={12} />
                                   ) : (
                                     index + 1
                                   )}
                                 </div>
                                 <div>
-                                  <strong>{index + 1}. {step.title}</strong>
-                                  <small>
-                                    {stepCurrent
-                                      ? "Current activity stage"
-                                      : stepDone
-                                        ? "Completed"
-                                        : `Target SLA · ${step.slaDays} days`}
-                                  </small>
-                                  {(step.subSteps ?? []).map((subStep, subStepIndex) => {
-                                    const subStepDone = stepDone || (stepCurrent && subStepIndex < currentSubStepIndex) || selectedActivity.status === "Completed";
-                                    const subStepCurrent = stepCurrent && subStepIndex === currentSubStepIndex;
-                                    return <div className={`timeline-substep ${subStepDone ? "complete" : "pending"} ${subStepCurrent ? "current" : ""}`} key={subStep}>
-                                      <span className="substep-circle">{subStepDone ? <Check size={10} /> : ""}</span>
-                                      <em>{index + 1}.{subStepIndex + 1} {subStep}</em>
-                                    </div>;
-                                  })}
-                                  {canEdit && <label className="step-remark-field">
-                                    <span>Admin remark</span>
-                                    <textarea
-                                      value={remarkDrafts[`${selectedActivity.id}:${step.id}`] ?? selectedActivity.stepRemarks?.[step.id] ?? ""}
-                                      onChange={(event) => setRemarkDrafts((current) => ({ ...current, [`${selectedActivity.id}:${step.id}`]: event.target.value }))}
-                                      placeholder="Add a note about this step"
-                                      rows={2}
-                                    />
-                                  </label>}
-                                  {renderStepComments(selectedActivity.id, step.id)}
+                                  <div className="timeline-step-heading-row">
+                                    <button
+                                      type="button"
+                                      className="timeline-step-toggle"
+                                      aria-expanded={expanded}
+                                      onClick={() => toggleTimelineStep(selectedActivity.id, step.id, false)}
+                                    >
+                                      <span className="timeline-step-heading">
+                                        <strong>{index + 1}. {step.title}</strong>
+                                        <small>
+                                          {stepCurrent
+                                            ? "Current activity stage"
+                                            : stepDone
+                                              ? "Completed"
+                                              : `Target SLA · ${step.slaDays} days`}
+                                        </small>
+                                      </span>
+                                      <ChevronDown size={16} aria-hidden="true" />
+                                    </button>
+                                  </div>
+                                  {subSteps.length > 0 && <div className="timeline-substeps">
+                                    {subSteps.map((subStep, subStepIndex) => {
+                                      const subStepDone = completedSubSteps.includes(subStep);
+                                      const subStepChecked = pendingTimelineStep?.stepTitle === step.title && pendingTimelineStep.subStep === subStep
+                                        ? pendingTimelineStep.shouldComplete
+                                        : subStepDone;
+                                      const subStepCurrent = stepCurrent && subStepIndex === currentSubStepIndex;
+                                      return <label className={`timeline-substep ${subStepDone ? "complete" : "pending"} ${subStepCurrent ? "current" : ""}`} key={subStep}>
+                                        <input
+                                          type="checkbox"
+                                          checked={subStepChecked}
+                                          disabled={!canEdit}
+                                          onChange={() => requestTimelineSubStepChange(step, index, subStep)}
+                                          aria-label={`Mark ${subStep} as complete`}
+                                        />
+                                        <em>{index + 1}.{subStepIndex + 1} {subStep}</em>
+                                      </label>;
+                                    })}
+                                  </div>}
+                                  {expanded && <div className="timeline-step-details">
+                                    {canEdit && <label className="step-remark-field">
+                                      <span>Admin remark</span>
+                                      <textarea
+                                        value={remarkDrafts[`${selectedActivity.id}:${step.id}`] ?? selectedActivity.stepRemarks?.[step.id] ?? ""}
+                                        onChange={(event) => setRemarkDrafts((current) => ({ ...current, [`${selectedActivity.id}:${step.id}`]: event.target.value }))}
+                                        placeholder="Add a note about this step"
+                                        rows={2}
+                                      />
+                                    </label>}
+                                  </div>}
                                 </div>
                               </div>
                               );
                             })}
                           </div>
                           <div className="activity-status-actions">
-                            <span>Step</span>
-                            <select disabled={!canEdit} value={selectedActivity.currentStep} onChange={(event) => updateActivityStatus(event.target.value, steps.find((step) => step.title === event.target.value)?.subSteps?.[0] ?? "")}>
-                              {activeSteps.map((step, index) => <option key={step.id} value={step.title}>{index + 1}. {step.title}</option>)}
-                            </select>
-                            <span>Sub-step</span>
-                            <select disabled={!canEdit} value={selectedActivitySubStep} onChange={(event) => updateActivityStatus(selectedActivity.currentStep, event.target.value)}>
-                              {(steps.find((step) => step.title === selectedActivity.currentStep)?.subSteps ?? []).map((subStep, index) => <option key={subStep} value={subStep}>{(activeSteps.findIndex((step) => step.title === selectedActivity.currentStep) + 1)}.{index + 1} {subStep}</option>)}
-                            </select>
                             {canEdit && <button className="button primary" onClick={saveActivityChanges}><Save size={14} /> Save changes</button>}
                           </div>
+                          </div>
+                          ) : (
+                            <div className="activity-design-panel">
+                              <div>
+                                <p className="eyebrow">Program activity design</p>
+                                <h3>Activity design and implementation details</h3>
+                                <p className="detail-subtitle">Document the design that will guide implementation for this activity.</p>
+                              </div>
+                              <div className="activity-program-details">
+                                <div><small>Program</small><strong>{program.title} ({program.acronym})</strong></div>
+                                <div><small>Agency / office</small><strong>{program.agency} · {program.office}</strong></div>
+                                <div><small>Target beneficiaries</small><strong>{program.beneficiaries || "Not specified"}</strong></div>
+                                <div><small>Operating units</small><strong>{program.units || "Not specified"}</strong></div>
+                              </div>
+                              <label>
+                                Activity design
+                                <textarea
+                                  value={selectedActivity.activityDesign ?? ""}
+                                  disabled={!canEdit}
+                                  onChange={(event) => setActivities((current) => current.map((activity) => activity.id === selectedActivity.id ? { ...activity, activityDesign: event.target.value } : activity))}
+                                  placeholder="Describe the activity design, approach, beneficiaries, outputs, and implementation arrangements."
+                                  rows={12}
+                                />
+                              </label>
+                              {canEdit && <div className="activity-status-actions"><button className="button primary" onClick={saveActivityDesign}><Save size={14} /> Save design</button></div>}
+                            </div>
+                          )}
                         </dialog>
+                        </div>
+                      )}
+                      {pendingTimelineStep && (
+                        <div className="dialog-overlay confirmation-overlay">
+                          <dialog open className="activity-dialog confirmation-dialog" aria-labelledby="timeline-confirmation-title">
+                            <p className="eyebrow">Confirm workflow update</p>
+                            <h2 id="timeline-confirmation-title">Change current step?</h2>
+                            <p className="confirmation-message">
+                              Set <strong>{pendingTimelineStep.stepTitle}</strong>{pendingTimelineStep.subStep ? <> to <strong>{pendingTimelineStep.subStep}</strong></> : ""} as the current activity progress? This will update the activity status.
+                            </p>
+                            <div className="confirmation-actions">
+                              <button className="button secondary" onClick={() => setPendingTimelineStep(null)}>Cancel</button>
+                              <button className="button primary" onClick={confirmTimelineStepChange}>Confirm change</button>
+                            </div>
+                          </dialog>
                         </div>
                       )}
                     </div>
@@ -1540,6 +1848,7 @@ function App() {
                             <th>Location</th>
                             <th>Schedule</th>
                             <th>Budget</th>
+                            <th>Progress</th>
                             <th>Current step</th>
                             <th>Status</th>
                           </tr>
@@ -1551,7 +1860,6 @@ function App() {
                               onClick={() => {
                                 setSelectedActivityId(activity.id);
                                 setShowActivityDialog(true);
-                                setActivityView("timeline");
                               }}
                             >
                               <td>
@@ -1571,6 +1879,14 @@ function App() {
                                   Spent ₱{activity.spent.toLocaleString()}
                                 </small>
                               </td>
+                              <td>
+                                <div className="table-progress">
+                                  <strong>{getActivityProgress(activity)}%</strong>
+                                  <div className="progress-track" role="progressbar" aria-valuenow={getActivityProgress(activity)} aria-valuemin={0} aria-valuemax={100} aria-label={`${activity.name} workflow progress`}>
+                                    <i style={{ width: `${getActivityProgress(activity)}%` }} />
+                                  </div>
+                                </div>
+                              </td>
                               <td>{getNumberedStep(steps, activity.currentStep)}</td>
                               <td>
                                 <span className={`status-tag ${activity.status === "Completed" ? "status-completed" : "status-progress"}`}>
@@ -1581,6 +1897,90 @@ function App() {
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  )}
+                  {selectedActivity && showActivityDialog && (
+                    <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowActivityDialog(false); }}>
+                      <dialog open className="activity-detail activity-dialog activity-design-dialog">
+                        <div className="detail-heading">
+                          <div>
+                            <p className="eyebrow">Activity design</p>
+                            <h2>{selectedActivity.name}</h2>
+                            <p className="detail-subtitle">{program.title} ({program.acronym}) · {selectedActivity.location}</p>
+                          </div>
+                          <div className="detail-actions">
+                            {canEdit && <button className="button secondary" onClick={() => editActivity(selectedActivity)}>Edit activity</button>}
+                            <button className="icon-button" aria-label="Close activity design" onClick={() => setShowActivityDialog(false)}><X size={17} /></button>
+                          </div>
+                        </div>
+                        <div className="activity-dialog-tabs" role="tablist" aria-label="Activity details">
+                          <button className={activityDialogTab === "design" ? "activity-dialog-tab active" : "activity-dialog-tab"} onClick={() => setActivityDialogTab("design")}>Activity design</button>
+                          <button className={activityDialogTab === "workflow" ? "activity-dialog-tab active" : "activity-dialog-tab"} onClick={() => setActivityDialogTab("workflow")}>Workflow</button>
+                        </div>
+                        {activityDialogTab === "workflow" ? (
+                          <div className="timeline-dialog-body">
+                            <div className="activity-program-details">
+                              <div><small>Workflow progress</small><strong>{getActivityProgress(selectedActivity)}%</strong></div>
+                              <div><small>Current step</small><strong>{getNumberedStep(steps, selectedActivity.currentStep)}</strong></div>
+                            </div>
+                            <div className="timeline">
+                              {activeSteps.map((step, index) => {
+                                const completed = getCompletedSubSteps(selectedActivity, step, index);
+                                const currentIndex = activeSteps.findIndex((item) => item.title === selectedActivity.currentStep);
+                                const stepDone = index < currentIndex || selectedActivity.status === "Completed";
+                                const stepCurrent = index === currentIndex && !stepDone;
+                                return <div className={`timeline-step ${stepDone || completed.length === (step.subSteps?.length ?? 0) ? "complete" : "pending"} ${stepCurrent ? "current" : ""}`} key={step.id}>
+                                  <div className="timeline-marker">{stepDone ? <Check size={12} /> : index + 1}</div>
+                                  <div>
+                                    <div className="timeline-step-heading"><strong>{index + 1}. {step.title}</strong><small>{stepCurrent ? "Current activity stage" : stepDone ? "Completed" : `Target SLA · ${step.slaDays} days`}</small></div>
+                                    <div className="timeline-substeps">
+                                      {(step.subSteps ?? []).map((subStep, subStepIndex) => <label className={`timeline-substep ${completed.includes(subStep) ? "complete" : "pending"}`} key={subStep}>
+                                        <input type="checkbox" checked={pendingTimelineStep?.stepTitle === step.title && pendingTimelineStep.subStep === subStep ? pendingTimelineStep.shouldComplete : completed.includes(subStep)} disabled={!canEdit} onChange={() => requestTimelineSubStepChange(step, index, subStep)} aria-label={`Mark ${subStep} as complete`} />
+                                        <em>{index + 1}.{subStepIndex + 1} {subStep}</em>
+                                      </label>)}
+                                    </div>
+                                  </div>
+                                </div>;
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                        <div className="activity-design-panel">
+                          <div className="activity-program-details">
+                            <div><small>Agency / office</small><strong>{program.agency} · {program.office}</strong></div>
+                            <div><small>Target beneficiaries</small><strong>{program.beneficiaries || "Not specified"}</strong></div>
+                            <div><small>Operating units</small><strong>{program.units || "Not specified"}</strong></div>
+                            <div><small>Workflow progress</small><strong>{getActivityProgress(selectedActivity)}%</strong></div>
+                          </div>
+                          <label>
+                            Activity design
+                            <textarea
+                              value={selectedActivity.activityDesign ?? ""}
+                              disabled={!canEdit}
+                              onChange={(event) => setActivities((current) => current.map((activity) => activity.id === selectedActivity.id ? { ...activity, activityDesign: event.target.value } : activity))}
+                              placeholder="Describe the activity design, approach, beneficiaries, outputs, and implementation arrangements."
+                              rows={12}
+                            />
+                          </label>
+                          {canEdit && <div className="activity-status-actions"><button className="button primary" onClick={saveActivityDesign}><Save size={14} /> Save design</button></div>}
+                        </div>
+                        )}
+                      </dialog>
+                      {pendingTimelineStep && (
+                        <div className="dialog-overlay confirmation-overlay">
+                          <dialog open className="activity-dialog confirmation-dialog" aria-labelledby="workflow-confirmation-title">
+                            <p className="eyebrow">Confirm workflow update</p>
+                            <h2 id="workflow-confirmation-title">{pendingTimelineStep.shouldComplete ? "Mark sub-step complete?" : "Unmark sub-step?"}</h2>
+                            <p className="confirmation-message">
+                              {pendingTimelineStep.shouldComplete ? "Mark" : "Unmark"} <strong>{pendingTimelineStep.subStep}</strong> under <strong>{pendingTimelineStep.stepTitle}</strong>?
+                            </p>
+                            <div className="confirmation-actions">
+                              <button className="button secondary" onClick={() => setPendingTimelineStep(null)}>Cancel</button>
+                              <button className="button primary" onClick={confirmTimelineStepChange}>Confirm</button>
+                            </div>
+                          </dialog>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1601,12 +2001,12 @@ function App() {
                   </div>
                   {settingsSection === "organizations" && isAdmin ? (
                     <div className="settings-list">
-                      <div className="member-invite">
-                        <h3>Invite program user</h3>
-                        <div className="settings-create"><input value={inviteForm.fullName} onChange={(event) => setInviteForm({ ...inviteForm, fullName: event.target.value })} placeholder="Full name" /><input type="email" value={inviteForm.email} onChange={(event) => setInviteForm({ ...inviteForm, email: event.target.value })} placeholder="Email address" /><select value={inviteForm.role} onChange={(event) => setInviteForm({ ...inviteForm, role: event.target.value as "editor" | "viewer" })}><option value="editor">Editor</option><option value="viewer">Viewer</option></select><button className="button primary" onClick={() => void inviteProgramUser(program.id, inviteForm.email, inviteForm.fullName, inviteForm.role).then(() => { setNotice("Invitation sent"); setInviteForm({ email: "", fullName: "", role: "editor" }); return loadMembers(program.id).then(setMembers); }).catch((error) => setNotice(error instanceof Error ? error.message : "Could not send invitation"))}><Plus size={15} /> Invite</button></div>
-                      </div>
+                      {systemRole !== "superadmin" && <div className="member-invite">
+                        <h3>Create program account</h3>
+                        <div className="settings-create"><input value={accountForm.fullName} onChange={(event) => setAccountForm({ ...accountForm, fullName: event.target.value })} placeholder="Full name" /><input type="email" value={accountForm.email} onChange={(event) => setAccountForm({ ...accountForm, email: event.target.value })} placeholder="Email address" /><input type="password" minLength={8} value={accountForm.password} onChange={(event) => setAccountForm({ ...accountForm, password: event.target.value })} placeholder="Temporary password" /><span className="account-role-label">Viewer for {program.acronym}</span><button className="button primary" onClick={() => void createAccount("viewer")}><Plus size={15} /> Create viewer</button></div>
+                      </div>}
                       <h3>Program users</h3>
-                      {members.map((member) => <div className="settings-row" key={member.id}><span>{member.profile?.full_name ?? member.profile?.email ?? member.user_id}</span><small>{member.profile?.email}</small><b>{member.role}</b></div>)}
+                      {members.map((member) => <div className="settings-row" key={member.id}><span>{member.profile?.full_name ?? member.profile?.email ?? member.user_id}</span><small>{member.profile?.email}</small><b>{member.role}</b><button className="icon-button" aria-label={`Edit ${member.profile?.full_name ?? "account"}`} onClick={() => { setAccountForm({ email: member.profile?.email ?? "", fullName: member.profile?.full_name ?? "", password: "", role: member.role === "program_admin" ? "program_admin" : "viewer" }); setMemberDialog(member); }}><Settings size={15} /></button><button className="icon-button danger" aria-label={`Delete ${member.profile?.full_name ?? "account"}`} onClick={() => void deleteMemberAccount(member)}><Trash2 size={15} /></button></div>)}
                       <h3>Organizations</h3>
                       <div className="settings-create"><input value={organizationDraft} onChange={(event) => setOrganizationDraft(event.target.value)} placeholder="Add organization or responsible unit" /><button className="button primary" onClick={addOrganization}><Plus size={15} /> Add</button></div>
                       {organizations.map((organization, index) => <div className="settings-row" key={`${organization}-${index}`}><span>{organization}</span><button className="icon-button danger" aria-label={`Delete ${organization}`} onClick={() => setOrganizations((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button></div>)}
@@ -1618,7 +2018,7 @@ function App() {
                       <div className="section-title">
                         <div>
                           <h2>Operational & fund workflow</h2>
-                          <p>Manage the reusable steps used to track activities from planning through liquidation.</p>
+                          <p>Manage the workflow for {program.acronym}. Program changes are saved only to this program and do not change other programs.</p>
                         </div>
                         {isAdmin && <button className="button secondary" onClick={addStep}><Plus size={16} /> Add step</button>}
                       </div>
@@ -1627,13 +2027,20 @@ function App() {
                           <button
                             key={step.id}
                             className={`workflow-row ${selectedId === step.id ? "selected" : ""} ${!step.active ? "inactive" : ""}`}
-                            onClick={() => { setSelectedId(step.id); setStepDialogEditing(canEdit); setShowStepDialog(true); }}
+                            onClick={() => {
+                              setSelectedId(step.id);
+                              if (!step.subSteps?.length) {
+                                setSteps((current) => current.map((item) => item.id === step.id ? { ...item, subSteps: withSampleSubSteps([item])[0].subSteps } : item));
+                              }
+                              setStepDialogEditing(canEdit);
+                              setShowStepDialog(true);
+                            }}
                           >
                             <GripVertical size={17} className="drag-icon" />
                             <span className="row-index">{String(index + 1).padStart(2, "0")}</span>
                             <span className="row-content">
                               <strong>{step.title}</strong>
-                              <small>{step.assignedRole} <span>•</span> {step.slaDays} days SLA</small>
+                              <small>{step.assignedRole} <span>•</span> {step.slaDays} days SLA <span>•</span> {step.subSteps?.length ?? 0} sub-steps</small>
                             </span>
                             <ChevronDown size={17} className="row-chevron" />
                           </button>
@@ -1785,6 +2192,33 @@ function App() {
                   <div><small>Recorded spending</small><strong>₱{selectedActivity.spent.toLocaleString()}</strong></div>
                 </div>
                 <div className="dashboard-activity-meta"><span>Current workflow step</span><strong>{getNumberedStep(steps, selectedActivity.currentStep)}</strong>{selectedActivity.currentSubStep && <><span>Current sub-step</span><strong>{(activeSteps.findIndex((step) => step.title === selectedActivity.currentStep) + 1)}.{(selectedActivityStep?.subSteps ?? []).indexOf(selectedActivity.currentSubStep) + 1} {selectedActivity.currentSubStep}</strong></>}</div>
+              </dialog>
+            </div>
+          )}
+
+          {showProgramCreateDialog && (
+            <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowProgramCreateDialog(false); }}>
+              <dialog open className="activity-dialog program-create-dialog">
+                <div className="detail-heading"><div><p className="eyebrow">Superadmin workspace</p><h2>Create program</h2><p className="detail-subtitle">Add the program details first, then assign its administrator from the program details dialog.</p></div><button className="icon-button" aria-label="Close create program dialog" onClick={() => setShowProgramCreateDialog(false)}><X size={17} /></button></div>
+                <div className="program-create-grid"><input value={programForm.title} onChange={(event) => setProgramForm({ ...programForm, title: event.target.value })} placeholder="Program name" /><input value={programForm.acronym} onChange={(event) => setProgramForm({ ...programForm, acronym: event.target.value })} placeholder="Acronym" /><input value={programForm.agency} onChange={(event) => setProgramForm({ ...programForm, agency: event.target.value })} placeholder="Agency" /><input value={programForm.office} onChange={(event) => setProgramForm({ ...programForm, office: event.target.value })} placeholder="Office / subtitle" /><input value={programForm.beneficiaries} onChange={(event) => setProgramForm({ ...programForm, beneficiaries: event.target.value })} placeholder="Target beneficiaries" /><input value={programForm.units} onChange={(event) => setProgramForm({ ...programForm, units: event.target.value })} placeholder="Operating units" /><textarea value={programForm.description} onChange={(event) => setProgramForm({ ...programForm, description: event.target.value })} placeholder="Program description" rows={3} /><button className="button primary" onClick={() => void createProgramForSuperadmin()}><Plus size={15} /> Create program</button></div>
+              </dialog>
+            </div>
+          )}
+
+          {memberDialog && (
+            <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setMemberDialog(null); }}>
+              <dialog open className="activity-dialog account-dialog">
+                <div className="detail-heading"><div><p className="eyebrow">{program.acronym} account</p><h2>Edit account</h2><p className="detail-subtitle">Update the user name or program role.</p></div><button className="icon-button" aria-label="Close account editor" onClick={() => setMemberDialog(null)}><X size={17} /></button></div>
+                <div className="account-dialog-form"><label>Full name<input value={accountForm.fullName} onChange={(event) => setAccountForm({ ...accountForm, fullName: event.target.value })} /></label><label>Email<input value={accountForm.email} disabled /></label><label>Role<select value={accountForm.role === "program_admin" ? "program_admin" : "viewer"} disabled={systemRole !== "superadmin"} onChange={(event) => setAccountForm({ ...accountForm, role: event.target.value as "program_admin" | "viewer" })}><option value="program_admin">Program admin</option><option value="viewer">Viewer</option></select></label><button className="button primary" onClick={() => void updateMemberAccount()}><Save size={14} /> Save account</button></div>
+              </dialog>
+            </div>
+          )}
+
+          {showProgramDetailDialog && showProgramAdminDialog && (
+            <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowProgramAdminDialog(false); }}>
+              <dialog open className="activity-dialog account-dialog">
+                <div className="detail-heading"><div><p className="eyebrow">{program.acronym}</p><h2>Create program admin</h2><p className="detail-subtitle">This account will manage {program.title} and create its viewers.</p></div><button className="icon-button" aria-label="Close program admin dialog" onClick={() => setShowProgramAdminDialog(false)}><X size={17} /></button></div>
+                <div className="account-dialog-form"><label>Full name<input value={accountForm.fullName} onChange={(event) => setAccountForm({ ...accountForm, fullName: event.target.value, role: "program_admin" })} placeholder="Program admin name" /></label><label>Email<input type="email" value={accountForm.email} onChange={(event) => setAccountForm({ ...accountForm, email: event.target.value, role: "program_admin" })} placeholder="admin@example.com" /></label><label>Password<input type="password" minLength={8} value={accountForm.password} onChange={(event) => setAccountForm({ ...accountForm, password: event.target.value, role: "program_admin" })} placeholder="At least 8 characters" /></label><button className="button primary" onClick={() => void createAccount("program_admin").then(() => setShowProgramAdminDialog(false))}><Save size={14} /> Create admin account</button></div>
               </dialog>
             </div>
           )}

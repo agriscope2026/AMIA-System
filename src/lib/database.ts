@@ -40,14 +40,15 @@ export type DatabaseActivity = {
   target_end_date: string | null;
   approved_budget: number;
   recorded_spending: number;
+  activity_design: string | null;
   status: string;
   current_step_id: string | null;
   current_sub_step: string | null;
   step_remarks: Record<string, string>;
 };
 
-export type AppProfile = { id: string; full_name: string; email: string };
-export type ProgramMember = { id: string; program_id: string; user_id: string; role: "admin" | "editor" | "viewer"; profile?: AppProfile };
+export type AppProfile = { id: string; full_name: string; email: string; system_role?: "superadmin" | "user" };
+export type ProgramMember = { id: string; program_id: string; user_id: string; role: "program_admin" | "editor" | "viewer"; profile?: AppProfile };
 export type ActivityComment = { id: string; activity_id: string; step_id: string | null; parent_id: string | null; author_id: string; body: string; created_at: string; author?: AppProfile };
 export type AuditLog = { id: string; program_id: string | null; actor_id: string | null; action: string; entity_type: string; entity_id: string | null; details: Record<string, unknown>; created_at: string; actor?: AppProfile };
 
@@ -82,10 +83,28 @@ export async function loadActivities(programId: string) {
   return (data ?? []) as DatabaseActivity[];
 }
 
+export async function loadAdminDatabaseTables() {
+  const client = requireClient();
+  const tableNames = ["programs", "workflow_steps", "program_activities", "profiles", "program_members", "audit_logs"];
+  const entries = await Promise.all(tableNames.map(async (tableName) => {
+    const { data, error } = await client.from(tableName).select("*").limit(500);
+    if (error) throw new Error(`Could not load ${tableName}: ${error.message}`);
+    return [tableName, (data ?? []) as Record<string, unknown>[]] as const;
+  }));
+  return Object.fromEntries(entries) as Record<string, Record<string, unknown>[]>;
+}
+
 export async function updateProgram(programId: string, values: Partial<DatabaseProgram>) {
   const client = requireClient();
   const { error } = await client.from("programs").update({ ...values, updated_at: new Date().toISOString() }).eq("id", programId);
   if (error) throw error;
+}
+
+export async function createProgram(values: Omit<DatabaseProgram, "id">) {
+  const client = requireClient();
+  const { data, error } = await client.from("programs").insert(values).select().single();
+  if (error) throw error;
+  return data as DatabaseProgram;
 }
 
 export async function updateWorkflowStep(stepId: string, values: Partial<DatabaseWorkflowStep>) {
@@ -139,6 +158,13 @@ export async function signIn(email: string, password: string) {
   return data.session;
 }
 
+export async function signUp(email: string, password: string, fullName: string) {
+  const client = requireClient();
+  const { data, error } = await client.auth.signUp({ email, password, options: { data: { full_name: fullName } } });
+  if (error) throw error;
+  return data;
+}
+
 export async function signOut() {
   const client = requireClient();
   const { error } = await client.auth.signOut();
@@ -147,7 +173,7 @@ export async function signOut() {
 
 export async function loadProfile(userId: string) {
   const client = requireClient();
-  const { data, error } = await client.from("profiles").select("id, full_name, email").eq("id", userId).single();
+  const { data, error } = await client.from("profiles").select("id, full_name, email, system_role").eq("id", userId).single();
   if (error) throw error;
   return data as AppProfile;
 }
@@ -180,9 +206,16 @@ export async function loadAuditLogs(programId: string) {
   return (data ?? []) as AuditLog[];
 }
 
-export async function inviteProgramUser(programId: string, email: string, fullName: string, role: "editor" | "viewer") {
+export async function createManagedUser(programId: string | null, email: string, fullName: string, role: "superadmin" | "program_admin" | "viewer") {
   const client = requireClient();
-  const { data, error } = await client.functions.invoke("invite-program-user", { body: { programId, email, fullName, role } });
+  const { data, error } = await client.functions.invoke("create-managed-user", { body: { programId, email, fullName, role } });
+  if (error) throw error;
+  return data as { message: string };
+}
+
+export async function manageProgramUser(action: "update" | "delete", programId: string, userId: string, values: { fullName?: string; role?: "program_admin" | "viewer" } = {}) {
+  const client = requireClient();
+  const { data, error } = await client.functions.invoke("manage-program-user", { body: { action, programId, userId, ...values } });
   if (error) throw error;
   return data as { message: string };
 }
