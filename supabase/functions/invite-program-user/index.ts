@@ -1,30 +1,36 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+import { handleCors, jsonResponse } from "../_shared/cors.ts";
 
 Deno.serve(async (request) => {
-  if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  const corsResponse = handleCors(request);
+  if (corsResponse) return corsResponse;
+  if (request.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
   try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!supabaseUrl || !anonKey || !serviceRoleKey) {
+      throw new Error("The account-management function is missing its Supabase server configuration");
+    }
     const authorization = request.headers.get("Authorization");
-    if (!authorization) throw new Error("Authentication is required");
+    if (!authorization?.startsWith("Bearer ")) throw new Error("Authentication is required");
 
-    const userClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
+    const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: authorization } },
     });
     const { data: userData, error: userError } = await userClient.auth.getUser();
     if (userError || !userData.user) throw new Error("Authentication is required");
 
     const { programId, email, fullName, role } = await request.json();
-    if (!programId || !email || !fullName || !["editor", "viewer"].includes(role)) throw new Error("programId, email, fullName, and role are required");
+    if (typeof programId !== "string" || !programId || typeof email !== "string" || !email.trim()
+      || typeof fullName !== "string" || !fullName.trim() || !["editor", "viewer"].includes(role)) {
+      throw new Error("programId, email, fullName, and a valid role are required");
+    }
 
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
-    const { data: membership } = await adminClient.from("program_members").select("role").eq("program_id", programId).eq("user_id", userData.user.id).single();
-    if (membership?.role !== "admin") throw new Error("Only program admins can invite users");
+    const { data: membership, error: membershipError } = await adminClient.from("program_members").select("role").eq("program_id", programId).eq("user_id", userData.user.id).maybeSingle();
+    if (membershipError) throw membershipError;
+    if (membership?.role !== "program_admin") throw new Error("Only program admins can invite users");
 
     const { data: invited, error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(email, { data: { full_name: fullName } });
     if (inviteError) throw inviteError;
@@ -35,8 +41,8 @@ Deno.serve(async (request) => {
     const { error: memberError } = await adminClient.from("program_members").upsert({ program_id: programId, user_id: invited.user.id, role }, { onConflict: "program_id,user_id" });
     if (memberError) throw memberError;
 
-    return new Response(JSON.stringify({ message: `Invitation sent to ${email}` }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return jsonResponse({ message: `Invitation sent to ${email}` });
   } catch (error) {
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unexpected error" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return jsonResponse({ error: error instanceof Error ? error.message : "Unexpected error" }, 400);
   }
 });

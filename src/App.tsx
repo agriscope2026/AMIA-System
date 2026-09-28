@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   ClipboardList,
+  CircleDollarSign,
   DollarSign,
   FileText,
   GripVertical,
@@ -23,8 +24,8 @@ import {
   X,
 } from "lucide-react";
 import "./App.css";
-import { createActivity as createDatabaseActivity, createManagedUser, createProgram, createWorkflowStep, databaseConfigured, deleteActivity as deleteDatabaseActivity, getAuthSession, loadActivities, loadAdminDatabaseTables, loadAuditLogs, loadMembers, loadPrograms, loadProfile, loadWorkflowSteps, manageProgramUser, signIn, signOut, subscribeToAuth, updateActivity as updateDatabaseActivity, updateProgram as updateDatabaseProgram, updateWorkflowStep } from "./lib/database";
-import type { AppProfile, AuditLog, ProgramMember } from "./lib/database";
+import { createActivity as createDatabaseActivity, createManagedUser, createProgram, createWorkflowStep, databaseConfigured, deleteActivity as deleteDatabaseActivity, deleteAnnualAllocation, deleteProcurementItem, getAuthSession, loadActivities, loadAdminDatabaseTables, loadAnnualAllocations, loadAuditLogs, loadMembers, loadProcurementItems, loadPrograms, loadProfile, loadWorkflowSteps, manageProgramUser, reorderWorkflowSteps, saveAnnualAllocation, saveProcurementItem, signIn, signOut, subscribeToAuth, updateActivity as updateDatabaseActivity, updateProgram as updateDatabaseProgram, updateWorkflowStep } from "./lib/database";
+import type { AnnualProgramAllocation, AppProfile, AuditLog, ProcurementItem, ProgramMember } from "./lib/database";
 
 type WorkflowStep = {
   id: string;
@@ -68,348 +69,23 @@ type Activity = {
   completedSubSteps?: Record<string, string[]>;
 };
 
-type LocalDraftState = {
-  programOptions: ProgramConfig[];
-  program: ProgramConfig;
-  steps: WorkflowStep[];
-  activities: Activity[];
-  organizations: string[];
-};
+type ProcurementDraft = Omit<ProcurementItem, "id" | "program_id" | "activity_id">;
 
-const localDraftKey = "da-rfo-car-tracking-draft";
-const localAccountsKey = "da-rfo-car-tracking-accounts";
-const localSessionKey = "da-rfo-car-tracking-session";
-type LocalAccount = { email: string; password: string; fullName: string; systemRole: "superadmin" | "user"; programRole?: "program_admin" | "viewer"; programId?: string };
-
-function readLocalDraft(): Partial<LocalDraftState> {
-  if (typeof window === "undefined") return {};
-  try {
-    return JSON.parse(window.localStorage.getItem(localDraftKey) ?? "{}");
-  } catch {
-    return {};
-  }
-}
-
-function readLocalSessionAccount(): LocalAccount | null {
-  if (typeof window === "undefined" || databaseConfigured) return null;
-  const email = window.localStorage.getItem(localSessionKey);
-  const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
-  return accounts.find((account) => account.email === email) ?? null;
-}
-
-function readLocalProgramMembers(programId: string): ProgramMember[] {
-  if (typeof window === "undefined") return [];
-  const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
-  return accounts.filter((account) => account.programId === programId && account.programRole).map((account, index) => ({
-    id: `local-member-${programId}-${index}`,
-    program_id: programId,
-    user_id: `local-user-${account.email}`,
-    role: account.programRole === "program_admin" ? "program_admin" : "viewer",
-    profile: { id: `local-user-${account.email}`, full_name: account.fullName, email: account.email, system_role: "user" },
-  }));
-}
-
-const amiaWorkflow: WorkflowStep[] = [
-  {
-    id: "amia-workplan",
-    title: "Activity Proposal & Work Plan",
-    description:
-      "Define the activity, target beneficiaries, expected outputs, schedule, and cost estimates.",
-    assignedRole: "AMIA Program Unit",
-    requiredDocuments: "Activity proposal, Work and financial plan",
-    slaDays: 5,
-    status: "Completed",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "amia-fund",
-    title: "Fund Allocation & Obligation",
-    description:
-      "Confirm available allotment and record the obligation against the approved activity budget.",
-    assignedRole: "Budget and Finance Division",
-    requiredDocuments: "Obligation request, Budget utilization request",
-    slaDays: 4,
-    status: "In Progress",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "amia-procurement",
-    title: "Activity Procurement",
-    description:
-      "Prepare the purchase request, canvass or bidding documents, and procurement recommendation.",
-    assignedRole: "Procurement Management Unit",
-    requiredDocuments: "Purchase request, Canvass, Abstract of quotations",
-    slaDays: 10,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-    subSteps: [
-      "Prepare purchase request",
-      "Conduct canvass or bidding",
-      "Evaluate quotations",
-      "Prepare procurement recommendation",
-    ],
-  },
-  {
-    id: "amia-award",
-    title: "Purchase Order / Contract Award",
-    description:
-      "Issue the purchase order or contract and notify the selected supplier or service provider.",
-    assignedRole: "BAC Secretariat / Supply Office",
-    requiredDocuments: "BAC resolution, Purchase order, Contract",
-    slaDays: 5,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "amia-delivery",
-    title: "Delivery, Inspection & Acceptance",
-    description:
-      "Verify delivered goods or completed services against the approved specifications and activity plan.",
-    assignedRole: "Inspection and Acceptance Committee",
-    requiredDocuments: "Delivery receipt, Inspection report, Acceptance report",
-    slaDays: 7,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "amia-implementation",
-    title: "Activity Implementation & Distribution",
-    description:
-      "Conduct the approved activity and document distribution, attendance, outputs, and beneficiary acknowledgement.",
-    assignedRole: "AMIA Field Operations Team",
-    requiredDocuments:
-      "Attendance sheet, Distribution list, Photo documentation",
-    slaDays: 15,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "amia-liquidation",
-    title: "Accomplishment & Liquidation",
-    description:
-      "Submit the accomplishment report and supporting financial documents for liquidation and payment recording.",
-    assignedRole: "AMIA Program Unit / Finance",
-    requiredDocuments: "Accomplishment report, Disbursement voucher, Receipts",
-    slaDays: 10,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "amia-savings",
-    title: "Savings & Fund Reversion",
-    description:
-      "Reconcile actual expenditures against the obligation, record savings, and process fund reversion or realignment.",
-    assignedRole: "Finance and Accounting Division",
-    requiredDocuments:
-      "Obligation reconciliation, Savings report, Reversion document",
-    slaDays: 7,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-];
-
-const fourKWorkflow: WorkflowStep[] = [
-  {
-    id: "4k-plan",
-    title: "Enterprise Activity Planning",
-    description:
-      "Identify the livelihood enterprise, beneficiaries, outputs, and approved implementation schedule.",
-    assignedRole: "4K Program Unit",
-    requiredDocuments: "Enterprise proposal, Beneficiary profile",
-    slaDays: 7,
-    status: "Completed",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "4k-fund",
-    title: "Fund Availability & Obligation",
-    description:
-      "Validate the program allocation and record the approved obligation for the enterprise activity.",
-    assignedRole: "Budget and Finance Division",
-    requiredDocuments: "Work and financial plan, Obligation request",
-    slaDays: 5,
-    status: "In Progress",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "4k-procurement",
-    title: "Procurement of Inputs / Services",
-    description:
-      "Procure farm inputs, equipment, or services based on the approved enterprise plan and specifications.",
-    assignedRole: "Procurement Management Unit",
-    requiredDocuments: "Purchase request, Canvass or bidding documents",
-    slaDays: 12,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "4k-delivery",
-    title: "Inspection & Acceptance",
-    description:
-      "Inspect the procured inputs or equipment and confirm quantity, quality, and compliance.",
-    assignedRole: "Inspection and Acceptance Committee",
-    requiredDocuments: "Delivery receipt, Inspection and acceptance report",
-    slaDays: 7,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "4k-release",
-    title: "Release & Enterprise Implementation",
-    description:
-      "Release assistance to qualified beneficiaries and carry out the approved enterprise activity.",
-    assignedRole: "4K Field Operations Team",
-    requiredDocuments:
-      "Release form, Beneficiary acknowledgement, Activity photos",
-    slaDays: 15,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "4k-monitoring",
-    title: "Monitoring & Accomplishment",
-    description:
-      "Monitor enterprise progress, validate outputs, and submit the physical and financial accomplishment report.",
-    assignedRole: "Planning and Monitoring Division",
-    requiredDocuments: "Monitoring report, Accomplishment report",
-    slaDays: 20,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-  {
-    id: "4k-liquidation",
-    title: "Liquidation & Savings Recording",
-    description:
-      "Complete liquidation, reconcile actual cost, and record any unused balance as savings.",
-    assignedRole: "4K Program Unit / Finance",
-    requiredDocuments: "Liquidation report, Receipts, Savings reconciliation",
-    slaDays: 10,
-    status: "Pending",
-    isOptional: false,
-    active: true,
-  },
-];
-
-const withSampleSubSteps = (workflow: WorkflowStep[]) =>
-  workflow.map((step) => ({
-    ...step,
-    subSteps: step.subSteps?.length
-      ? [...step.subSteps]
-      : [
-          `Prepare ${step.title}`,
-          `Complete ${step.title}`,
-          `Record ${step.title} outcome`,
-        ],
-  }));
-
-const sampleActivities: Record<string, Activity[]> = {
-  amia: [
-    {
-      id: "amia-act-1",
-      name: "Climate-smart vegetable production inputs",
-      location: "Benguet",
-      startDate: "2026-04-08",
-      endDate: "2026-06-30",
-      budget: 850000,
-      spent: 420000,
-      status: "Activity Procurement",
-      currentStep: "Activity Procurement",
-    },
-    {
-      id: "amia-act-2",
-      name: "Rainwater harvesting support",
-      location: "Ifugao",
-      startDate: "2026-05-18",
-      endDate: "2026-09-30",
-      budget: 1200000,
-      spent: 1200000,
-      status: "Activity Implementation & Distribution",
-      currentStep: "Activity Implementation & Distribution",
-    },
-    {
-      id: "amia-act-3",
-      name: "Climate field school and farmer training",
-      location: "Mountain Province",
-      startDate: "2026-02-03",
-      endDate: "2026-03-28",
-      budget: 360000,
-      spent: 342500,
-      status: "Completed",
-      currentStep: "Savings & Fund Reversion",
-    },
-  ],
-  "4k": [
-    {
-      id: "4k-act-1",
-      name: "Indigenous coffee enterprise starter kits",
-      location: "Apayao",
-      startDate: "2026-03-11",
-      endDate: "2026-08-30",
-      budget: 980000,
-      spent: 185000,
-      status: "Procurement of Inputs / Services",
-      currentStep: "Procurement of Inputs / Services",
-    },
-    {
-      id: "4k-act-2",
-      name: "Community vegetable processing enterprise",
-      location: "Abra",
-      startDate: "2026-01-20",
-      endDate: "2026-04-30",
-      budget: 720000,
-      spent: 696000,
-      status: "Completed",
-      currentStep: "Liquidation & Savings Recording",
-    },
-  ],
-};
-
-const samplePrograms: ProgramConfig[] = [
-  {
-    id: "amia",
-    title: "Adaptation and Mitigation Initiative in Agriculture",
-    acronym: "AMIA",
-    agency: "Department of Agriculture",
-    office: "Regional Field Office - Cordillera Administrative Region",
-    description:
-      "A program workspace for managing climate-resilient agriculture activities, procurement, fund utilization, and savings reconciliation.",
-    beneficiaries: "Climate-vulnerable farmers, fisherfolk, cooperatives",
-    units: "AMIA Program Unit, Field Operations, Finance and Accounting",
-    primary: "#1c6653",
-    accent: "#d8a642",
-    logo: "",
-    steps: withSampleSubSteps(amiaWorkflow),
-  },
-  {
-    id: "4k",
-    title: "Kabuhayan at Kaunlaran Para sa Kababayang Katutubo",
-    acronym: "4K",
-    agency: "Department of Agriculture",
-    office: "Regional Field Office - Cordillera Administrative Region",
-    description:
-      "A program workspace for planning, procuring, delivering, and monitoring livelihood enterprise assistance for indigenous communities.",
-    beneficiaries: "Indigenous farmer groups and community enterprises",
-    units: "4K Program Unit, Procurement, Field Operations, Finance",
-    primary: "#315b72",
-    accent: "#d6a13f",
-    logo: "",
-    steps: withSampleSubSteps(fourKWorkflow),
-  },
-];
+const createEmptyAllocationDraft = () => ({
+  fund_source: "General Appropriations Act (GAA)",
+  allotment_reference: "",
+  obligation_reference: "",
+  disbursement_reference: "",
+  appropriation: "",
+  allotment_received: "",
+  obligations: "",
+  disbursements: "",
+  accounts_payable: "",
+  cash_advances: "",
+  liquidation: "",
+  savings: "",
+  remarks: "",
+});
 
 const mapDatabaseStep = (step: import("./lib/database").DatabaseWorkflowStep): WorkflowStep => ({
   id: step.id,
@@ -421,9 +97,7 @@ const mapDatabaseStep = (step: import("./lib/database").DatabaseWorkflowStep): W
   status: step.status_tag,
   isOptional: step.is_optional,
   active: step.is_active,
-  subSteps: step.sub_steps?.length
-    ? step.sub_steps
-    : [`Prepare ${step.title}`, `Complete ${step.title}`, `Record ${step.title} outcome`],
+  subSteps: step.sub_steps ?? [],
 });
 
 const mapDatabaseActivity = (activity: import("./lib/database").DatabaseActivity, steps: WorkflowStep[]): Activity => ({
@@ -439,7 +113,7 @@ const mapDatabaseActivity = (activity: import("./lib/database").DatabaseActivity
   currentStep: steps.find((step) => step.id === activity.current_step_id)?.title ?? steps[0]?.title ?? "",
   currentSubStep: activity.current_sub_step ?? "",
   stepRemarks: activity.step_remarks ?? {},
-  completedSubSteps: {},
+  completedSubSteps: activity.completed_sub_steps ?? {},
 });
 
 function getActivityStatus(workflow: WorkflowStep[], currentStep: string, currentSubStep: string) {
@@ -470,33 +144,54 @@ const mapDatabaseProgram = (program: import("./lib/database").DatabaseProgram, s
   steps,
 });
 
+function getDatabaseErrorMessage(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return typeof error === "string" ? error : "Unknown database error";
+  }
+  const details = error as Record<string, unknown>;
+  const fields = [
+    typeof details.message === "string" ? details.message : null,
+    typeof details.code === "string" ? `Code: ${details.code}` : null,
+    typeof details.details === "string" ? `Details: ${details.details}` : null,
+    typeof details.hint === "string" ? `Hint: ${details.hint}` : null,
+  ].filter((field): field is string => Boolean(field));
+  return fields.length ? fields.join(" — ") : "Unknown database error";
+}
+
+const emptyProgramConfig: ProgramConfig = {
+  id: "",
+  title: "",
+  acronym: "",
+  agency: "",
+  office: "",
+  description: "",
+  beneficiaries: "",
+  units: "",
+  primary: "#1c6653",
+  accent: "#d8a642",
+  logo: "",
+  steps: [],
+};
+
 function App() {
-  const localDraft = readLocalDraft();
-  const localSessionAccount = readLocalSessionAccount();
-  const [programOptions, setProgramOptions] = useState<ProgramConfig[]>(localDraft.programOptions ?? samplePrograms);
-  const [program, setProgram] = useState<ProgramConfig>(localDraft.program ?? samplePrograms[0]);
-  const [steps, setSteps] = useState<WorkflowStep[]>(
-    localDraft.steps ?? withSampleSubSteps(amiaWorkflow),
-  );
-  const [activities, setActivities] = useState<Activity[]>(
-    localDraft.activities ?? sampleActivities.amia,
-  );
-  const [activitiesByProgram, setActivitiesByProgram] = useState<Record<string, Activity[]>>(() =>
-    Object.fromEntries(Object.entries(sampleActivities).map(([id, records]) => [id, records])),
-  );
-  const [selectedId, setSelectedId] = useState("amia-procurement");
+  const [programOptions, setProgramOptions] = useState<ProgramConfig[]>([]);
+  const [program, setProgram] = useState<ProgramConfig>(emptyProgramConfig);
+  const [steps, setSteps] = useState<WorkflowStep[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [activitiesByProgram, setActivitiesByProgram] = useState<Record<string, Activity[]>>({});
+  const [selectedId, setSelectedId] = useState("");
   const [showStepDialog, setShowStepDialog] = useState(false);
   const [stepDialogEditing, setStepDialogEditing] = useState(false);
-  const [selectedActivityId, setSelectedActivityId] = useState("amia-act-1");
+  const [selectedActivityId, setSelectedActivityId] = useState("");
   const [expandedTimelineSteps, setExpandedTimelineSteps] = useState<Record<string, boolean>>({});
   const [pendingTimelineStep, setPendingTimelineStep] = useState<{ stepTitle: string; subStep: string; shouldComplete: boolean } | null>(null);
   const [remarkDrafts, setRemarkDrafts] = useState<Record<string, string>>({});
   const [session, setSession] = useState<Awaited<ReturnType<typeof getAuthSession>>>(null);
   const [authReady, setAuthReady] = useState(!databaseConfigured);
-  const [localAuthenticated, setLocalAuthenticated] = useState(() => Boolean(localSessionAccount));
-  const [profile, setProfile] = useState<AppProfile | null>(localSessionAccount ? { id: "local-user", full_name: localSessionAccount.fullName, email: localSessionAccount.email, system_role: localSessionAccount.systemRole } : null);
-  const [programRole, setProgramRole] = useState<ProgramMember["role"]>(localSessionAccount?.programRole ?? (databaseConfigured ? "viewer" : "program_admin"));
-  const [systemRole, setSystemRole] = useState<"superadmin" | "user">(localSessionAccount?.systemRole ?? "user");
+  const [profile, setProfile] = useState<AppProfile | null>(null);
+  const [profileLoadError, setProfileLoadError] = useState<{ userId: string; message: string } | null>(null);
+  const [programRole, setProgramRole] = useState<ProgramMember["role"]>("viewer");
+  const [systemRole, setSystemRole] = useState<"superadmin" | "user">("user");
   const [members, setMembers] = useState<ProgramMember[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loginEmail, setLoginEmail] = useState("");
@@ -505,19 +200,17 @@ function App() {
   const [accountForm, setAccountForm] = useState({ email: "", fullName: "", password: "", role: "viewer" as "superadmin" | "program_admin" | "viewer" });
   const [programForm, setProgramForm] = useState({ title: "", acronym: "", agency: "Department of Agriculture", office: "", description: "", beneficiaries: "", units: "", adminFullName: "", adminEmail: "", adminPassword: "" });
   const [showActivityDialog, setShowActivityDialog] = useState(false);
-  const [activityDialogTab, setActivityDialogTab] = useState<"timeline" | "design" | "workflow">("workflow");
-  const [showProgramAdminDialog, setShowProgramAdminDialog] = useState(false);
+  const [activityDialogTab, setActivityDialogTab] = useState<"timeline" | "design" | "workflow" | "procurement">("workflow");
   const [showProgramDetailDialog, setShowProgramDetailDialog] = useState(false);
   const [showProgramCreateDialog, setShowProgramCreateDialog] = useState(false);
+  const [programCreateError, setProgramCreateError] = useState("");
   const [programDialogEditing, setProgramDialogEditing] = useState(false);
   const [programDialogTab, setProgramDialogTab] = useState<"details" | "admins">("details");
   const [memberDialog, setMemberDialog] = useState<ProgramMember | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "programs" | "details" | "workflow" | "activities" | "settings" | "database"
+    "dashboard" | "programs" | "details" | "workflow" | "activities" | "settings" | "finance"
   >("dashboard");
-  const [settingsSection, setSettingsSection] = useState<"organizations" | "fund-workflow" | "audit">("organizations");
-  const [organizations, setOrganizations] = useState(localDraft.organizations ?? ["AMIA Program Unit", "Procurement Management Unit", "Budget and Finance Division"]);
-  const [organizationDraft, setOrganizationDraft] = useState("");
+  const [settingsSection, setSettingsSection] = useState<"fund-workflow" | "audit" | "database">("fund-workflow");
   const [activityView] = useState<"timeline" | "table">("table");
   const [activitySearch, setActivitySearch] = useState("");
   const [showActivityForm, setShowActivityForm] = useState(false);
@@ -539,6 +232,27 @@ function App() {
   const [databaseTables, setDatabaseTables] = useState<Record<string, Record<string, unknown>[]>>({});
   const [selectedDatabaseTable, setSelectedDatabaseTable] = useState("programs");
   const [databaseLoading, setDatabaseLoading] = useState(false);
+  const [annualAllocations, setAnnualAllocations] = useState<AnnualProgramAllocation[]>([]);
+  const [allocationSaving, setAllocationSaving] = useState(false);
+  const [editingAllocationId, setEditingAllocationId] = useState<string | null>(null);
+  const [showAllocationForm, setShowAllocationForm] = useState(false);
+  const [selectedFiscalYear, setSelectedFiscalYear] = useState(new Date().getFullYear());
+  const [allocationDraft, setAllocationDraft] = useState(createEmptyAllocationDraft);
+  const [procurementItems, setProcurementItems] = useState<ProcurementItem[]>([]);
+  const [editingProcurementItemId, setEditingProcurementItemId] = useState<string | null>(null);
+  const [procurementLoadedActivityId, setProcurementLoadedActivityId] = useState<string | null>(null);
+  const [procurementDraft, setProcurementDraft] = useState<ProcurementDraft>({
+    category: "Food and catering",
+    item_description: "",
+    supplier_name: "",
+    procurement_method: "Small Value Procurement",
+    purchase_order_number: "",
+    quantity: 1,
+    unit: "lot",
+    unit_cost: 0,
+    delivery_status: "For procurement",
+    delivery_date: null,
+  });
   const activeSteps = useMemo(
     () => steps.filter((step) => step.active),
     [steps],
@@ -566,13 +280,7 @@ function App() {
       if (databaseConfigured) {
         setDatabaseTables(await loadAdminDatabaseTables());
       } else {
-        const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
-        setDatabaseTables({
-          programs: programOptions as unknown as Record<string, unknown>[],
-          workflow_steps: programOptions.flatMap((item) => item.steps) as unknown as Record<string, unknown>[],
-          program_activities: Object.values(dashboardActivityMap).flat() as unknown as Record<string, unknown>[],
-          local_accounts: accounts.map((account) => Object.fromEntries(Object.entries(account).filter(([key]) => key !== "password"))),
-        });
+        throw new Error("Configure Supabase before opening the database browser");
       }
       setNotice("Database browser refreshed");
     } catch (error) {
@@ -581,21 +289,6 @@ function App() {
       setDatabaseLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (databaseConfigured) return;
-    const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
-    if (!accounts.some((account) => account.email === "superadmin@gmail.com")) {
-      window.localStorage.setItem(localAccountsKey, JSON.stringify([...accounts, { email: "superadmin@gmail.com", password: "password123", fullName: "System Superadmin", systemRole: "superadmin" }]));
-    }
-    window.localStorage.setItem(localDraftKey, JSON.stringify({
-      programOptions,
-      program,
-      steps,
-      activities,
-      organizations,
-    } satisfies LocalDraftState));
-  }, [activities, organizations, program, programOptions, steps]);
 
   useEffect(() => {
     if (!databaseConfigured) return;
@@ -614,7 +307,22 @@ function App() {
 
   useEffect(() => {
     if (!databaseConfigured || !session?.user) return;
-    void loadProfile(session.user.id).then((loadedProfile) => { setProfile(loadedProfile); setSystemRole(loadedProfile.system_role ?? "user"); }).catch(() => setProfile({ id: session.user.id, full_name: session.user.email ?? "User", email: session.user.email ?? "" }));
+    let currentRequest = true;
+    void loadProfile(session.user.id).then((loadedProfile) => {
+      if (!currentRequest) return;
+      setProfile(loadedProfile);
+      setSystemRole(loadedProfile.system_role ?? "user");
+      setProfileLoadError(null);
+    }).catch((error: unknown) => {
+      if (!currentRequest) return;
+      setProfile({ id: session.user.id, full_name: session.user.email ?? "User", email: session.user.email ?? "" });
+      setSystemRole("user");
+      setProfileLoadError({
+        userId: session.user.id,
+        message: error instanceof Error ? error.message : "Could not load your account role",
+      });
+    });
+    return () => { currentRequest = false; };
   }, [session]);
 
   useEffect(() => {
@@ -622,53 +330,74 @@ function App() {
     void loadMembers(program.id).then((loadedMembers) => {
       setMembers(loadedMembers);
       setProgramRole(loadedMembers.find((member) => member.user_id === session.user.id)?.role ?? "viewer");
-    }).catch(() => setMembers([]));
+    }).catch((error: unknown) => {
+      setMembers([]);
+      setProgramRole("viewer");
+      setNotice(error instanceof Error
+        ? `Could not load program permissions: ${error.message}`
+        : "Could not load program permissions");
+    });
     void loadAuditLogs(program.id).then(setAuditLogs).catch(() => setAuditLogs([]));
   }, [program.id, session]);
 
-  const canEdit = !databaseConfigured || systemRole === "superadmin" || programRole === "program_admin" || programRole === "editor";
-  const isAdmin = !databaseConfigured || systemRole === "superadmin" || programRole === "program_admin";
+  useEffect(() => {
+    if (!databaseConfigured || !program.id || activeTab !== "finance") return;
+    void loadAnnualAllocations(program.id).then(setAnnualAllocations).catch((error: unknown) => {
+      setNotice(error instanceof Error ? `Could not load annual allocations: ${error.message}` : "Could not load annual allocations");
+    });
+  }, [activeTab, program.id]);
+
+  useEffect(() => {
+    if (!databaseConfigured || !showActivityDialog || !selectedActivityId) return;
+    let currentRequest = true;
+    void loadProcurementItems(selectedActivityId).then((items) => {
+      if (!currentRequest) return;
+      setProcurementItems(items);
+      setProcurementLoadedActivityId(selectedActivityId);
+    }).catch((error: unknown) => {
+      if (!currentRequest) return;
+      setNotice(error instanceof Error ? `Could not load procurement items: ${error.message}` : "Could not load procurement items");
+      setProcurementItems([]);
+      setProcurementLoadedActivityId(selectedActivityId);
+    });
+    return () => { currentRequest = false; };
+  }, [selectedActivityId, showActivityDialog]);
+
+  const canEdit = systemRole === "superadmin" || programRole === "program_admin" || programRole === "editor";
+  const isAdmin = systemRole === "superadmin" || programRole === "program_admin";
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoginError("");
-    if (!databaseConfigured) {
-      const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
-      const account = accounts.find((item) => item.email === loginEmail.trim().toLowerCase() && item.password === loginPassword);
-      if (!account) {
-        setLoginError("Invalid local account. Create an account first or configure Supabase for production login.");
-        return;
-      }
-      setProfile({ id: "local-user", full_name: account.fullName, email: account.email, system_role: account.systemRole });
-      setSystemRole(account.systemRole);
-      setProgramRole(account.programRole ?? "viewer");
-      setLocalAuthenticated(true);
-      window.localStorage.setItem(localSessionKey, account.email);
-      return;
-    }
     try {
       await signIn(loginEmail.trim(), loginPassword);
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "Unable to sign in");
     }
   };
-  const createAccount = async (forcedRole?: "superadmin" | "program_admin" | "viewer") => {
-    const role = forcedRole ?? (systemRole === "superadmin" ? accountForm.role : (programRole === "program_admin" ? accountForm.role : "viewer"));
-    const targetProgram = role === "superadmin" ? null : program.id;
+  const createAccount = async () => {
+    const role = systemRole === "superadmin" && accountForm.role === "program_admin" ? "program_admin" : "viewer";
+    const targetProgram = program.id;
+    if (!accountForm.fullName.trim() || !accountForm.email.trim() || accountForm.password.length < 8) {
+      setNotice("Enter a name, valid email, and password of at least 8 characters");
+      return false;
+    }
     try {
-      if (!databaseConfigured) {
-        const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
-        const email = accountForm.email.trim().toLowerCase();
-        if (accounts.some((item) => item.email === email)) throw new Error("That email already has an account");
-        window.localStorage.setItem(localAccountsKey, JSON.stringify([...accounts, { email, password: accountForm.password, fullName: accountForm.fullName.trim(), systemRole: "user", programRole: role === "program_admin" ? "program_admin" : "viewer", programId: targetProgram ?? undefined }]));
-      } else {
-        await createManagedUser(targetProgram, accountForm.email.trim(), accountForm.fullName.trim(), role);
-      }
-      setNotice(`${role} account created`);
+      const createdAccount = await createManagedUser(targetProgram, accountForm.email.trim(), accountForm.fullName.trim(), accountForm.password, role);
+      setNotice(createdAccount.requiresEmailConfirmation
+        ? `${role} account created; the user must confirm their email before signing in`
+        : `${role} account created`);
       setAccountForm({ email: "", fullName: "", password: "", role: systemRole === "superadmin" ? "program_admin" : "viewer" });
-      if (targetProgram && databaseConfigured) setMembers(await loadMembers(targetProgram));
-      if (targetProgram && !databaseConfigured) setMembers(readLocalProgramMembers(targetProgram));
+      if (targetProgram) {
+        try {
+          setMembers(await loadMembers(targetProgram));
+        } catch (error) {
+          setNotice(error instanceof Error ? `Account created, but the user list could not be refreshed: ${error.message}` : "Account created, but the user list could not be refreshed");
+        }
+      }
+      return true;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not create account");
+      return false;
     }
   };
   const updateMemberAccount = async () => {
@@ -676,32 +405,22 @@ function App() {
     const fullName = accountForm.fullName.trim();
     const role = accountForm.role === "program_admin" ? "program_admin" : "viewer";
     try {
-      if (databaseConfigured) {
-        await manageProgramUser("update", program.id, memberDialog.user_id, { fullName, role });
-      } else {
-        const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
-        window.localStorage.setItem(localAccountsKey, JSON.stringify(accounts.map((account) => account.email === memberDialog.profile?.email ? { ...account, fullName, programRole: role } : account)));
-      }
+      await manageProgramUser("update", program.id, memberDialog.user_id, { fullName, role });
       setMembers((current) => current.map((member) => member.id === memberDialog.id ? { ...member, role, profile: { ...member.profile!, full_name: fullName } } : member));
       setNotice("Account updated");
       setMemberDialog(null);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not update account");
+      setNotice(getDatabaseErrorMessage(error));
     }
   };
   const deleteMemberAccount = async (member: ProgramMember) => {
-    if (!window.confirm(`Revoke ${member.profile?.full_name ?? "this user's"} access to ${program.acronym}?`)) return;
+    if (!window.confirm(`Remove ${member.profile?.full_name ?? "this user"} from ${program.acronym}? Their Supabase Auth account will remain active, but they will lose access to this program.`)) return;
     try {
-      if (databaseConfigured) {
-        await manageProgramUser("delete", program.id, member.user_id);
-      } else {
-        const accounts = JSON.parse(window.localStorage.getItem(localAccountsKey) ?? "[]") as LocalAccount[];
-        window.localStorage.setItem(localAccountsKey, JSON.stringify(accounts.filter((account) => account.email !== member.profile?.email)));
-      }
+      await manageProgramUser("delete", program.id, member.user_id);
       setMembers((current) => current.filter((item) => item.id !== member.id));
-      setNotice("Program access revoked");
+      setNotice("Program access revoked. The Supabase Auth account remains active.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not revoke account access");
+      setNotice(getDatabaseErrorMessage(error));
     }
   };
   const createProgramForSuperadmin = async () => {
@@ -709,18 +428,34 @@ function App() {
       setNotice("Program name and acronym are required");
       return;
     }
+    const normalizedAcronym = programForm.acronym.trim().toUpperCase();
+    const existingProgram = programOptions.find((option) => option.acronym.trim().toUpperCase() === normalizedAcronym);
+    if (existingProgram) {
+      const message = `The acronym ${normalizedAcronym} is already used by ${existingProgram.title}. Choose a different acronym or open that program.`;
+      setProgramCreateError(message);
+      setNotice(message);
+      return;
+    }
+    setProgramCreateError("");
     const programValues = {
-      title: programForm.title.trim(), acronym: programForm.acronym.trim().toUpperCase(), agency_title: programForm.agency.trim() || "Department of Agriculture", office_subtitle: programForm.office.trim() || null,
+      title: programForm.title.trim(), acronym: normalizedAcronym, agency_title: programForm.agency.trim() || "Department of Agriculture", office_subtitle: programForm.office.trim() || null,
       description: programForm.description.trim() || null, target_beneficiaries: programForm.beneficiaries.trim() || null, operating_units: programForm.units.split(",").map((item) => item.trim()).filter(Boolean), logo_url: null, theme_color: "#1c6653", accent_color: "#d8a642", is_active: true,
     };
-    const defaultWorkflow = withSampleSubSteps(programValues.acronym === "4K" ? fourKWorkflow : amiaWorkflow);
+    const workflowTemplate = programOptions.find((option) => option.acronym.toUpperCase() === programValues.acronym) ?? programOptions[0];
+    const defaultWorkflow = workflowTemplate?.steps.filter((step) => step.active) ?? [];
+    let createdProgram: import("./lib/database").DatabaseProgram | null = null;
+    const createdSteps: WorkflowStep[] = [];
     try {
-      let createdProgramId = "";
-      if (databaseConfigured) {
-        const created = await createProgram(programValues);
-        createdProgramId = created.id;
-        const createdSteps = await Promise.all(defaultWorkflow.map((step, index) => createWorkflowStep({
-          program_id: created.id,
+      createdProgram = await createProgram(programValues);
+      const createdProgramRecord = createdProgram;
+      const mappedProgram = mapDatabaseProgram(createdProgramRecord, []);
+      setProgramOptions((current) => [...current, mappedProgram]);
+      setProgram(mappedProgram);
+      setSteps([]);
+      setActivities([]);
+      for (const [index, step] of defaultWorkflow.entries()) {
+        const created = await createWorkflowStep({
+          program_id: createdProgramRecord.id,
           step_order: index + 1,
           title: step.title,
           description: step.description,
@@ -731,34 +466,45 @@ function App() {
           status_tag: step.status,
           is_optional: step.isOptional,
           is_active: step.active,
-        })));
-        const mapped = mapDatabaseProgram(created, createdSteps.map(mapDatabaseStep));
-        setProgramOptions((current) => [...current, mapped]);
-        setProgram(mapped);
-        setSteps(mapped.steps);
-        setActivities([]);
-      } else {
-        createdProgramId = `program-${crypto.randomUUID()}`;
-        const mapped: ProgramConfig = { id: createdProgramId, title: programValues.title, acronym: programValues.acronym, agency: programValues.agency_title, office: programValues.office_subtitle ?? "", description: programValues.description ?? "", beneficiaries: programValues.target_beneficiaries ?? "", units: programValues.operating_units.join(", "), primary: programValues.theme_color, accent: programValues.accent_color, logo: "", steps: defaultWorkflow.map((step, index) => ({ ...step, id: `${createdProgramId}-step-${index + 1}` })) };
-        setProgramOptions((current) => [...current, mapped]);
-        setProgram(mapped);
-        setSteps(mapped.steps);
-        setActivities([]);
+        });
+        createdSteps.push(mapDatabaseStep(created));
+        const programWithStep = mapDatabaseProgram(createdProgramRecord, [...createdSteps]);
+        setProgramOptions((current) => current.map((item) => item.id === programWithStep.id ? programWithStep : item));
+        setProgram(programWithStep);
+        setSteps(programWithStep.steps);
       }
       setProgramForm({ title: "", acronym: "", agency: "Department of Agriculture", office: "", description: "", beneficiaries: "", units: "", adminFullName: "", adminEmail: "", adminPassword: "" });
       setShowProgramCreateDialog(false);
-      setNotice("Program created; add its program admin from the program details");
+      setNotice(defaultWorkflow.length
+        ? "Program created; add its program admin from the program details"
+        : "Program created without workflow steps; add its workflow in Settings, then assign its program admin");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not create program");
+      const message = getDatabaseErrorMessage(error);
+      setProgramCreateError(message);
+      if (createdProgram) {
+        setProgramForm({ title: "", acronym: "", agency: "Department of Agriculture", office: "", description: "", beneficiaries: "", units: "", adminFullName: "", adminEmail: "", adminPassword: "" });
+        setShowProgramCreateDialog(false);
+        setNotice(`Program was created, but a starter workflow step failed (${createdSteps.length}/${defaultWorkflow.length} created): ${message}. The program is available; continue adding steps in Settings → Fund workflow.`);
+      } else {
+        setNotice(`Program was not created: ${message}`);
+      }
     }
   };
   useEffect(() => {
-    if (!databaseConfigured) return;
+    if (!databaseConfigured || !session?.user) return;
     let mounted = true;
     const hydrateFromDatabase = async () => {
       try {
         const records = await loadPrograms();
-        if (!mounted || records.length === 0) return;
+        if (!mounted) return;
+        if (records.length === 0) {
+          setProgramOptions([]);
+          setProgram(emptyProgramConfig);
+          setSteps([]);
+          setActivities([]);
+          setNotice("No programs are seeded in the online database");
+          return;
+        }
         const options = await Promise.all(records.map(async (record) => {
           const recordsSteps = await loadWorkflowSteps(record.id);
           return mapDatabaseProgram(record, recordsSteps.map(mapDatabaseStep));
@@ -776,13 +522,13 @@ function App() {
         setSelectedActivityId(firstActivities[0]?.id ?? "");
         setNotice("Loaded from database");
       } catch (error) {
-        if (mounted) setNotice("Database unavailable; showing local draft data");
+        if (mounted) setNotice(error instanceof Error ? `Database unavailable: ${error.message}` : "Database unavailable");
         console.error(error);
       }
     };
     void hydrateFromDatabase();
     return () => { mounted = false; };
-  }, []);
+  }, [session]);
 
   const updateProgram = (field: "title" | "acronym" | "agency" | "office" | "description" | "beneficiaries" | "units" | "primary" | "accent" | "logo", value: string) => {
     if (!isAdmin) return;
@@ -791,7 +537,35 @@ function App() {
     if (databaseConfigured) {
       const databaseField = { title: "title", acronym: "acronym", agency: "agency_title", office: "office_subtitle", description: "description", beneficiaries: "target_beneficiaries", units: "operating_units", primary: "theme_color", accent: "accent_color", logo: "logo_url" }[field];
       const databaseValue = field === "units" ? value.split(",").map((item) => item.trim()).filter(Boolean) : value;
-      void updateDatabaseProgram(program.id, { [databaseField]: databaseValue });
+      void updateDatabaseProgram(program.id, { [databaseField]: databaseValue }).catch((error: unknown) => {
+        setNotice(`Program update was not saved: ${getDatabaseErrorMessage(error)}`);
+      });
+    }
+  };
+  const saveProgramChanges = async () => {
+    if (!isAdmin || !program.id) {
+      setNotice("Program changes cannot be saved without an administrator role and a selected program");
+      return false;
+    }
+    try {
+      await updateDatabaseProgram(program.id, {
+        title: program.title,
+        acronym: program.acronym,
+        agency_title: program.agency,
+        office_subtitle: program.office || null,
+        description: program.description || null,
+        target_beneficiaries: program.beneficiaries || null,
+        operating_units: program.units.split(",").map((unit) => unit.trim()).filter(Boolean),
+        logo_url: program.logo || null,
+        theme_color: program.primary,
+        accent_color: program.accent,
+      });
+      setNotice("Program changes saved to the online database");
+      setSaved(true);
+      return true;
+    } catch (error) {
+      setNotice(`Program changes were not saved: ${getDatabaseErrorMessage(error)}`);
+      return false;
     }
   };
   const updateStep = (
@@ -808,14 +582,16 @@ function App() {
     if (databaseConfigured && !selectedId.startsWith("step-") && !stepDialogEditing) {
       const databaseField = { title: "title", description: "description", assignedRole: "assigned_role", requiredDocuments: "required_documents", slaDays: "sla_days", status: "status_tag", isOptional: "is_optional", active: "is_active", subSteps: "sub_steps" }[field];
       const databaseValue = field === "requiredDocuments" ? String(value).split(",").map((item) => item.trim()).filter(Boolean) : value;
-      void updateWorkflowStep(selectedId, { [databaseField]: databaseValue });
+      void updateWorkflowStep(selectedId, { [databaseField]: databaseValue }).catch((error: unknown) => {
+        setNotice(`Workflow update was not saved: ${getDatabaseErrorMessage(error)}`);
+      });
     }
   };
-  const saveStepChanges = () => {
+  const saveStepChanges = async () => {
     const step = steps.find((item) => item.id === selectedId);
     if (!step) return;
-    if (databaseConfigured && !selectedId.startsWith("step-")) {
-      void updateWorkflowStep(selectedId, {
+    try {
+      await updateWorkflowStep(selectedId, {
         title: step.title,
         description: step.description,
         assigned_role: step.assignedRole,
@@ -825,13 +601,16 @@ function App() {
         is_optional: step.isOptional,
         is_active: step.active,
         sub_steps: step.subSteps ?? [],
-      }).catch(() => setNotice("Step saved locally; database update failed"));
+      });
+    } catch (error) {
+      setNotice(`Workflow step was not saved: ${getDatabaseErrorMessage(error)}`);
+      return;
     }
     setStepDialogEditing(false);
     setShowStepDialog(false);
     setNotice("Workflow step saved");
   };
-  const moveStep = (direction: -1 | 1) => {
+  const moveStep = async (direction: -1 | 1) => {
     const index = steps.findIndex((step) => step.id === selectedId);
     const nextIndex = index + direction;
     if (index < 0 || nextIndex < 0 || nextIndex >= steps.length) return;
@@ -840,12 +619,17 @@ function App() {
       nextSteps[nextIndex],
       nextSteps[index],
     ];
-    setSteps(nextSteps);
-    setProgramOptions((programs) => programs.map((item) => item.id === program.id ? { ...item, steps: nextSteps } : item));
-    setProgram((current) => current.id === program.id ? { ...current, steps: nextSteps } : current);
-    setSaved(false);
+    try {
+      await reorderWorkflowSteps(program.id, nextSteps.map((step) => step.id));
+      setSteps(nextSteps);
+      setProgramOptions((programs) => programs.map((item) => item.id === program.id ? { ...item, steps: nextSteps } : item));
+      setProgram((current) => current.id === program.id ? { ...current, steps: nextSteps } : current);
+      setSaved(false);
+    } catch (error) {
+      setNotice(`Workflow order was not saved: ${getDatabaseErrorMessage(error)}`);
+    }
   };
-  const addStep = () => {
+  const addStep = async () => {
     const id = `step-${Date.now()}`;
     const draftStep: WorkflowStep = {
       id,
@@ -860,11 +644,17 @@ function App() {
       subSteps: ["Complete this step", "Record the result"],
     };
     if (databaseConfigured) {
-      void createWorkflowStep({ program_id: program.id, step_order: steps.length + 1, title: draftStep.title, description: draftStep.description, sub_steps: draftStep.subSteps ?? [], assigned_role: draftStep.assignedRole, required_documents: draftStep.requiredDocuments.split(","), sla_days: draftStep.slaDays, status_tag: draftStep.status, is_optional: false, is_active: true }).then((created) => {
+      try {
+        const created = await createWorkflowStep({ program_id: program.id, step_order: steps.length + 1, title: draftStep.title, description: draftStep.description, sub_steps: draftStep.subSteps ?? [], assigned_role: draftStep.assignedRole, required_documents: draftStep.requiredDocuments.split(","), sla_days: draftStep.slaDays, status_tag: draftStep.status, is_optional: false, is_active: true });
         const mapped = mapDatabaseStep(created);
         setSteps((current) => [...current, mapped]);
+        setProgram((current) => current.id === program.id ? { ...current, steps: [...current.steps, mapped] } : current);
+        setProgramOptions((current) => current.map((item) => item.id === program.id ? { ...item, steps: [...item.steps, mapped] } : item));
         setSelectedId(mapped.id);
-      }).catch(() => setNotice("Could not create workflow step"));
+      } catch (error) {
+        setNotice(`Workflow step was not created: ${getDatabaseErrorMessage(error)}`);
+        return;
+      }
     } else {
       const nextSteps = [...steps, draftStep];
       setSteps(nextSteps);
@@ -908,8 +698,9 @@ function App() {
     }
   };
   const selectProgram = (id: string) => {
-    const nextProgram = programOptions.find((sample) => sample.id === id);
+    const nextProgram = programOptions.find((item) => item.id === id);
     if (!nextProgram) return;
+    setAnnualAllocations([]);
     if (databaseConfigured) {
       void (async () => {
         try {
@@ -921,6 +712,11 @@ function App() {
           setActivities(recordsActivities.map((activity) => mapDatabaseActivity(activity, recordsSteps)));
           setSelectedId(recordsSteps[0]?.id ?? "");
           setSelectedActivityId(recordsActivities[0]?.id ?? "");
+          setActivitiesByProgram((current) => ({
+            ...current,
+            [id]: recordsActivities.map((activity) => mapDatabaseActivity(activity, recordsSteps)),
+          }));
+          setNotice(`${databaseProgram.acronym} workspace opened`);
           return;
         } catch (error) {
           console.error(error);
@@ -929,20 +725,28 @@ function App() {
       })();
       return;
     }
-    setProgram(nextProgram);
-    setSteps(withSampleSubSteps(nextProgram.steps));
-    setActivities(sampleActivities[id].map((activity) => ({ ...activity })));
-    setSelectedId(nextProgram.steps[0].id);
-    setSelectedActivityId(sampleActivities[id][0]?.id ?? "");
-    setSaved(false);
   };
-  const saveActivity = () => {
+  const openProgramWorkspace = (id: string) => {
+    if (!programOptions.some((item) => item.id === id)) return;
+    setShowProgramDetailDialog(false);
+    selectProgram(id);
+    setActiveTab("finance");
+  };
+  const saveActivity = async () => {
     if (!newActivity.name.trim()) {
       setNotice("Activity name is required");
       return;
     }
-    if (newActivity.startDate && newActivity.endDate && newActivity.endDate < newActivity.startDate) {
+    if (!newActivity.startDate) {
+      setNotice("Activity start date is required");
+      return;
+    }
+    if (newActivity.endDate && newActivity.endDate < newActivity.startDate) {
       setNotice("Target end date must be after the start date");
+      return;
+    }
+    if (!activeSteps.length) {
+      setNotice("Add at least one workflow step before creating an activity");
       return;
     }
     const budget = Number(newActivity.budget) || 0;
@@ -955,8 +759,8 @@ function App() {
       id: `${program.id}-act-${Date.now()}`,
       name: newActivity.name.trim(),
       location: newActivity.location || "Regional activity",
-      startDate: newActivity.startDate || "2026-07-01",
-      endDate: newActivity.endDate || "2026-09-30",
+      startDate: newActivity.startDate,
+      endDate: newActivity.endDate,
       budget,
       spent,
       activityDesign: newActivity.activityDesign.trim(),
@@ -965,16 +769,7 @@ function App() {
       currentSubStep: newActivity.currentSubStep || steps.find((step) => step.title === (newActivity.currentStep || steps[0]?.title))?.subSteps?.[0] || "",
       stepRemarks: editingActivityId ? activities.find((item) => item.id === editingActivityId)?.stepRemarks ?? {} : {},
     };
-    if (editingActivityId) {
-      setActivities((current) => current.map((item) => item.id === editingActivityId ? { ...activity, id: editingActivityId } : item));
-      setSelectedActivityId(editingActivityId);
-      setNotice("Activity updated");
-    } else {
-      setActivities((current) => [activity, ...current]);
-      setSelectedActivityId(activity.id);
-      setNotice("Activity created");
-    }
-    if (databaseConfigured) {
+    try {
       const currentStepId = steps.find((step) => step.title === activity.currentStep)?.id ?? null;
       const databaseValues = {
         title: activity.name,
@@ -988,15 +783,24 @@ function App() {
         current_sub_step: activity.currentSubStep ?? null,
         step_remarks: activity.stepRemarks ?? {},
         activity_design: activity.activityDesign ?? "",
+        completed_sub_steps: activity.completedSubSteps ?? {},
       };
       if (editingActivityId) {
-        void updateDatabaseActivity(editingActivityId, databaseValues).catch(() => setNotice("Activity updated locally; database update failed"));
+        await updateDatabaseActivity(editingActivityId, databaseValues);
+        setActivities((current) => current.map((item) => item.id === editingActivityId ? { ...activity, id: editingActivityId } : item));
+        setSelectedActivityId(editingActivityId);
+        setNotice("Activity updated in the online database");
       } else {
-        void createDatabaseActivity({ program_id: program.id, activity_code: `ACT-${Date.now()}`, ...databaseValues }).then((created) => {
-          setActivities((current) => current.map((item) => item.id === activity.id ? mapDatabaseActivity(created, steps) : item));
-          setSelectedActivityId(created.id);
-        }).catch(() => setNotice("Activity created locally; database insert failed"));
+        const created = await createDatabaseActivity({ program_id: program.id, activity_code: `ACT-${Date.now()}`, ...databaseValues });
+        const savedActivity = mapDatabaseActivity(created, steps);
+        setActivities((current) => [savedActivity, ...current]);
+        setActivitiesByProgram((current) => ({ ...current, [program.id]: [savedActivity, ...(current[program.id] ?? [])] }));
+        setSelectedActivityId(created.id);
+        setNotice("Activity saved to the online database");
       }
+    } catch (error) {
+      setNotice(`Activity was not saved: ${getDatabaseErrorMessage(error)}`);
+      return;
     }
     setNewActivity({
       name: "",
@@ -1032,12 +836,15 @@ function App() {
     setShowActivityDialog(false);
     setShowActivityForm(true);
   };
-  const deleteActivity = (id: string) => {
-    setActivities((current) => current.filter((activity) => activity.id !== id));
-    setSelectedActivityId("");
-    setNotice("Activity deleted");
-    if (databaseConfigured && !id.startsWith(`${program.id}-act-`)) {
-      void deleteDatabaseActivity(id).catch(() => setNotice("Activity removed locally; database delete failed"));
+  const deleteActivity = async (id: string) => {
+    try {
+      await deleteDatabaseActivity(id);
+      setActivities((current) => current.filter((activity) => activity.id !== id));
+      setActivitiesByProgram((current) => ({ ...current, [program.id]: (current[program.id] ?? []).filter((activity) => activity.id !== id) }));
+      setSelectedActivityId("");
+      setNotice("Activity deleted from the online database");
+    } catch (error) {
+      setNotice(`Activity was not deleted: ${getDatabaseErrorMessage(error)}`);
     }
   };
   const selectedActivity =
@@ -1052,35 +859,165 @@ function App() {
       .includes(query);
   });
   const selectedActivityStep = steps.find((step) => step.title === selectedActivity?.currentStep);
-  const saveActivityChanges = () => {
+  const saveActivityChanges = async () => {
     if (!selectedActivity) return;
     const stepRemarks = { ...(selectedActivity.stepRemarks ?? {}) };
     activeSteps.forEach((step) => {
       const draftKey = `${selectedActivity.id}:${step.id}`;
       if (draftKey in remarkDrafts) stepRemarks[step.id] = remarkDrafts[draftKey];
     });
-    setActivities((current) => current.map((activity) => activity.id === selectedActivity.id ? { ...activity, stepRemarks } : activity));
-    if (databaseConfigured && !selectedActivity.id.startsWith(`${program.id}-act-`)) {
+    try {
       const currentStepId = steps.find((step) => step.title === selectedActivity.currentStep)?.id ?? null;
-      void updateDatabaseActivity(selectedActivity.id, {
+      await updateDatabaseActivity(selectedActivity.id, {
         status: selectedActivity.status,
         current_step_id: currentStepId,
         current_sub_step: selectedActivity.currentSubStep ?? null,
         step_remarks: stepRemarks,
-      }).catch(() => setNotice("Changes saved locally; database update failed"));
+        completed_sub_steps: selectedActivity.completedSubSteps ?? {},
+      });
+      setActivities((current) => current.map((activity) => activity.id === selectedActivity.id ? { ...activity, stepRemarks } : activity));
+      setNotice("Activity changes saved to the online database");
+    } catch (error) {
+      setNotice(`Activity changes were not saved: ${getDatabaseErrorMessage(error)}`);
     }
-    setNotice("Activity changes saved");
     setSaved(false);
   };
-  const saveActivityDesign = () => {
+  const saveActivityDesign = async () => {
     if (!selectedActivity || !canEdit) return;
     const activityDesign = selectedActivity.activityDesign ?? "";
-    setActivities((current) => current.map((activity) => activity.id === selectedActivity.id ? { ...activity, activityDesign } : activity));
-    if (databaseConfigured && !selectedActivity.id.startsWith(`${program.id}-act-`)) {
-      void updateDatabaseActivity(selectedActivity.id, { activity_design: activityDesign }).catch(() => setNotice("Design saved locally; database update failed"));
+    try {
+      await updateDatabaseActivity(selectedActivity.id, { activity_design: activityDesign });
+      setActivities((current) => current.map((activity) => activity.id === selectedActivity.id ? { ...activity, activityDesign } : activity));
+      setNotice("Activity design saved to the online database");
+    } catch (error) {
+      setNotice(`Activity design was not saved: ${getDatabaseErrorMessage(error)}`);
     }
-    setNotice("Activity design saved");
   };
+  const saveAllocation = async () => {
+    const appropriation = Number(allocationDraft.appropriation) || 0;
+    const allotment_received = Number(allocationDraft.allotment_received) || 0;
+    const obligations = Number(allocationDraft.obligations) || 0;
+    const disbursements = Number(allocationDraft.disbursements) || 0;
+    const supplementalAmounts = [allocationDraft.accounts_payable, allocationDraft.cash_advances, allocationDraft.liquidation, allocationDraft.savings].map((value) => Number(value) || 0);
+    if (!allocationDraft.fund_source.trim() || [appropriation, allotment_received, obligations, disbursements, ...supplementalAmounts].some((amount) => !Number.isFinite(amount) || amount < 0)) {
+      setNotice("Enter a fund source and non-negative financial amounts");
+      return;
+    }
+    if (allotment_received > appropriation || obligations > allotment_received || disbursements > obligations) {
+      setNotice("Check the financial ceilings: allotments cannot exceed appropriation, obligations cannot exceed allotment, and disbursements cannot exceed obligations");
+      return;
+    }
+    setAllocationSaving(true);
+    try {
+      const savedAllocation = await saveAnnualAllocation({
+        id: editingAllocationId ?? undefined,
+        program_id: program.id,
+        fiscal_year: selectedFiscalYear,
+        fund_source: allocationDraft.fund_source.trim(),
+        allotment_reference: allocationDraft.allotment_reference.trim() || null,
+        obligation_reference: allocationDraft.obligation_reference.trim() || null,
+        disbursement_reference: allocationDraft.disbursement_reference.trim() || null,
+        appropriation,
+        allotment_received,
+        obligations,
+        disbursements,
+        accounts_payable: Number(allocationDraft.accounts_payable) || 0,
+        cash_advances: Number(allocationDraft.cash_advances) || 0,
+        liquidation: Number(allocationDraft.liquidation) || 0,
+        savings: Number(allocationDraft.savings) || 0,
+        remarks: allocationDraft.remarks.trim() || null,
+      });
+      setAnnualAllocations((current) => [...current.filter((row) => row.id !== savedAllocation.id), savedAllocation].sort((a, b) => b.fiscal_year - a.fiscal_year || a.fund_source.localeCompare(b.fund_source)));
+      setEditingAllocationId(null);
+      setAllocationDraft(createEmptyAllocationDraft());
+      setShowAllocationForm(false);
+      setNotice("Annual financial allocation saved to the database");
+    } catch (error) {
+      setNotice(`Annual allocation was not saved: ${getDatabaseErrorMessage(error)}`);
+    } finally {
+      setAllocationSaving(false);
+    }
+  };
+  const removeAllocation = async (id: string) => {
+    try {
+      await deleteAnnualAllocation(id);
+      setAnnualAllocations((current) => current.filter((row) => row.id !== id));
+      setNotice("Annual allocation deleted");
+    } catch (error) {
+      setNotice(`Could not delete allocation: ${getDatabaseErrorMessage(error)}`);
+    }
+  };
+  const addProcurementItem = async () => {
+    if (!selectedActivity || !procurementDraft.category.trim() || !procurementDraft.item_description.trim() || !procurementDraft.supplier_name.trim() || !procurementDraft.procurement_method.trim() || !procurementDraft.unit.trim()) {
+      setNotice("Enter the category, item/service, supplier, procurement method, and unit");
+      return;
+    }
+    if (!Number.isFinite(procurementDraft.quantity) || !Number.isFinite(procurementDraft.unit_cost) || procurementDraft.quantity <= 0 || procurementDraft.unit_cost < 0) {
+      setNotice("Quantity must be greater than zero and unit cost cannot be negative");
+      return;
+    }
+    try {
+      const savedItem = await saveProcurementItem({
+        id: editingProcurementItemId ?? undefined,
+        ...procurementDraft,
+        program_id: program.id,
+        activity_id: selectedActivity.id,
+        category: procurementDraft.category.trim(),
+        item_description: procurementDraft.item_description.trim(),
+        supplier_name: procurementDraft.supplier_name.trim(),
+        procurement_method: procurementDraft.procurement_method.trim(),
+        unit: procurementDraft.unit.trim(),
+        purchase_order_number: procurementDraft.purchase_order_number?.trim() || null,
+        delivery_date: procurementDraft.delivery_date || null,
+      });
+      setProcurementItems((current) => [...current.filter((item) => item.id !== savedItem.id), savedItem]);
+      setEditingProcurementItemId(null);
+      setProcurementDraft({ category: "Food and catering", item_description: "", supplier_name: "", procurement_method: "Small Value Procurement", purchase_order_number: "", quantity: 1, unit: "lot", unit_cost: 0, delivery_status: "For procurement", delivery_date: null });
+      setNotice("Procurement item saved to the database");
+    } catch (error) {
+      setNotice(`Procurement item was not saved: ${getDatabaseErrorMessage(error)}`);
+    }
+  };
+  const removeProcurementItem = async (item: ProcurementItem) => {
+    try {
+      await deleteProcurementItem(item.id);
+      setProcurementItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
+      setNotice("Procurement item deleted");
+    } catch (error) {
+      setNotice(`Could not delete procurement item: ${getDatabaseErrorMessage(error)}`);
+    }
+  };
+  const procurementPanel = selectedActivity ? (
+    <div className="procurement-panel">
+      <div className="procurement-heading">
+        <div><p className="eyebrow">Activity procurement plan</p><h3>Suppliers, goods, and services</h3><p>Track a separate supplier for every category or purchase package.</p></div>
+        <span className="procurement-total">₱{procurementItems.reduce((sum, item) => sum + Number(item.quantity) * Number(item.unit_cost), 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+      </div>
+      {procurementLoadedActivityId !== selectedActivity.id ? <div className="empty-state">Loading supplier records…</div> : procurementItems.length ? <div className="procurement-items">{procurementItems.map((item) => (
+        <article className="procurement-item" key={item.id}>
+          <div><span className="procurement-category">{item.category}</span><h4>{item.item_description}</h4><p>{item.supplier_name} · {item.procurement_method}</p><small>{item.purchase_order_number ? `PO ${item.purchase_order_number} · ` : ""}{item.delivery_status}{item.delivery_date ? ` · ${item.delivery_date}` : ""}</small></div>
+          <div className="procurement-item-amount"><strong>₱{(Number(item.quantity) * Number(item.unit_cost)).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong><small>{Number(item.quantity).toLocaleString()} {item.unit} × ₱{Number(item.unit_cost).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</small></div>
+          {canEdit && <div className="finance-row-actions"><button className="button secondary" onClick={() => { setEditingProcurementItemId(item.id); setProcurementDraft({ category: item.category, item_description: item.item_description, supplier_name: item.supplier_name, procurement_method: item.procurement_method, purchase_order_number: item.purchase_order_number ?? "", quantity: Number(item.quantity), unit: item.unit, unit_cost: Number(item.unit_cost), delivery_status: item.delivery_status, delivery_date: item.delivery_date }); }}>Edit</button><button className="icon-button danger" aria-label={`Delete procurement item from ${item.supplier_name}`} onClick={() => void removeProcurementItem(item)}><Trash2 size={15} /></button></div>}
+        </article>
+      ))}</div> : <div className="empty-state">No procurement suppliers recorded for this activity.</div>}
+      {canEdit && <section className="procurement-form">
+        <h4>Add goods, services, or supplier</h4>
+        <div className="procurement-form-grid">
+          <label>Category<input list="procurement-categories" value={procurementDraft.category} onChange={(event) => setProcurementDraft({ ...procurementDraft, category: event.target.value })} /><datalist id="procurement-categories"><option value="Food and catering" /><option value="Venue and lodging" /><option value="Transport and freight" /><option value="Training and professional services" /><option value="Farm inputs and materials" /><option value="Equipment and supplies" /><option value="Other goods or services" /></datalist></label>
+          <label>Item / service<input value={procurementDraft.item_description} onChange={(event) => setProcurementDraft({ ...procurementDraft, item_description: event.target.value })} placeholder="Describe the goods or service" /></label>
+          <label>Supplier / service provider<input value={procurementDraft.supplier_name} onChange={(event) => setProcurementDraft({ ...procurementDraft, supplier_name: event.target.value })} placeholder="Registered supplier name" /></label>
+          <label>Procurement method<input list="procurement-methods" value={procurementDraft.procurement_method} onChange={(event) => setProcurementDraft({ ...procurementDraft, procurement_method: event.target.value })} /><datalist id="procurement-methods"><option value="Competitive bidding" /><option value="Small Value Procurement" /><option value="Negotiated procurement" /><option value="Direct contracting" /><option value="Agency-to-agency" /><option value="Other method" /></datalist></label>
+          <label>PO / contract reference<input value={procurementDraft.purchase_order_number ?? ""} onChange={(event) => setProcurementDraft({ ...procurementDraft, purchase_order_number: event.target.value })} placeholder="Optional reference" /></label>
+          <label>Quantity<input type="number" min="0.001" step="0.001" value={procurementDraft.quantity} onChange={(event) => setProcurementDraft({ ...procurementDraft, quantity: Number(event.target.value) })} /></label>
+          <label>Unit<input value={procurementDraft.unit} onChange={(event) => setProcurementDraft({ ...procurementDraft, unit: event.target.value })} placeholder="lot, pax, unit, day" /></label>
+          <label>Unit cost (₱)<input type="number" min="0" step="0.01" value={procurementDraft.unit_cost} onChange={(event) => setProcurementDraft({ ...procurementDraft, unit_cost: Number(event.target.value) })} /></label>
+          <label>Delivery status<select value={procurementDraft.delivery_status} onChange={(event) => setProcurementDraft({ ...procurementDraft, delivery_status: event.target.value })}><option>For procurement</option><option>Purchase order issued</option><option>Partially delivered</option><option>Delivered</option><option>Inspected and accepted</option><option>Cancelled</option></select></label>
+          <label>Delivery date<input type="date" value={procurementDraft.delivery_date ?? ""} onChange={(event) => setProcurementDraft({ ...procurementDraft, delivery_date: event.target.value || null })} /></label>
+        </div>
+        <div className="finance-form-actions">{editingProcurementItemId && <button className="button secondary" onClick={() => { setEditingProcurementItemId(null); setProcurementDraft({ category: "Food and catering", item_description: "", supplier_name: "", procurement_method: "Small Value Procurement", purchase_order_number: "", quantity: 1, unit: "lot", unit_cost: 0, delivery_status: "For procurement", delivery_date: null }); }}>Cancel edit</button>}<button className="button primary" onClick={() => void addProcurementItem()}><Save size={14} /> {editingProcurementItemId ? "Update supplier line" : "Save supplier line online"}</button></div>
+      </section>}
+    </div>
+  ) : null;
   const toggleTimelineStep = (activityId: string, stepId: string, defaultExpanded: boolean) => {
     const key = `${activityId}:${stepId}`;
     setExpandedTimelineSteps((current) => ({ ...current, [key]: !(current[key] ?? defaultExpanded) }));
@@ -1117,7 +1054,7 @@ function App() {
     }
     setPendingTimelineStep({ stepTitle: step.title, subStep, shouldComplete });
   };
-  const confirmTimelineStepChange = () => {
+  const confirmTimelineStepChange = async () => {
     if (!pendingTimelineStep) return;
     const stepIndex = activeSteps.findIndex((step) => step.title === pendingTimelineStep.stepTitle);
     const step = activeSteps[stepIndex];
@@ -1135,33 +1072,59 @@ function App() {
     const activeStepIndex = Math.min(lastCompletedStepIndex + 1, activeSteps.length - 1);
     const activeStep = activeSteps[activeStepIndex];
     const activeSubStep = completedSubSteps[activeStep?.id ?? ""]?.at(-1) ?? "";
-    setActivities((currentActivities) => currentActivities.map((activity) => activity.id === selectedActivity.id
-      ? { ...activity, completedSubSteps, currentStep: activeStep?.title ?? activity.currentStep, currentSubStep: activeSubStep, status: getActivityStatus(steps, activeStep?.title ?? activity.currentStep, activeSubStep) }
-      : activity));
-    setPendingTimelineStep(null);
-    setPendingTimelineStep(null);
+    const currentStep = activeStep?.title ?? selectedActivity.currentStep;
+    const status = getActivityStatus(steps, currentStep, activeSubStep);
+    try {
+      await updateDatabaseActivity(selectedActivity.id, {
+        completed_sub_steps: completedSubSteps,
+        current_step_id: activeStep?.id ?? null,
+        current_sub_step: activeSubStep,
+        status,
+      });
+      setActivities((currentActivities) => currentActivities.map((activity) => activity.id === selectedActivity.id
+        ? { ...activity, completedSubSteps, currentStep, currentSubStep: activeSubStep, status }
+        : activity));
+      setPendingTimelineStep(null);
+      setNotice("Workflow progress saved to the online database");
+    } catch (error) {
+      setNotice(`Workflow progress was not saved: ${getDatabaseErrorMessage(error)}`);
+    }
   };
   const navigateTo = (
-    tab: "dashboard" | "programs" | "details" | "workflow" | "activities" | "settings" | "database",
+    tab: "dashboard" | "programs" | "details" | "workflow" | "activities" | "settings" | "finance",
     message: string,
   ) => {
     setActiveTab(tab);
-    if (tab === "database") void loadDatabaseBrowser();
+    if (tab === "finance" && program.id) void loadAnnualAllocations(program.id).then(setAnnualAllocations).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load annual allocations"));
     setNotice(message);
   };
-  const addOrganization = () => {
-    if (!organizationDraft.trim()) return;
-    setOrganizations((current) => [...current, organizationDraft.trim()]);
-    setOrganizationDraft("");
-    setNotice("Organization added");
-  };
-  if (authReady && (databaseConfigured ? !session : !localAuthenticated)) {
+  if (!databaseConfigured) {
+    return (
+      <main className="database-setup-required">
+        <section className="database-setup-card">
+          <ShieldCheck size={32} />
+          <p className="eyebrow">Online database required</p>
+          <h1>Connect this app to Supabase</h1>
+          <p>Local browser storage and demo records are disabled. Configure the hosted database before signing in or changing program data.</p>
+          <ol>
+            <li>Create or select the DA-RFO-CAR Supabase project.</li>
+            <li>Set <code>VITE_SUPABASE_URL</code> and the public anon or publishable key in <code>.env.local</code>.</li>
+            <li>Apply any missing migrations through <code>007</code> in order. On an existing database, run only migrations that have not already been applied.</li>
+            <li>Restart the Vite server, then create the initial administrator in Supabase Auth and promote that profile as described in the README.</li>
+          </ol>
+          <p>For Vercel, set both Vite variables in the project's Environment Variables settings and redeploy the app.</p>
+          <p className="database-setup-warning">Never place a Supabase service-role key or real user password in client code or committed files.</p>
+        </section>
+      </main>
+    );
+  }
+  if (authReady && !session) {
     return (
       <main className="auth-shell">
         <form className="auth-card" onSubmit={handleLogin}>
           <p className="eyebrow">DA-RFO-CAR</p>
           <h1>Welcome back</h1>
-          <p>{databaseConfigured ? "Sign in to manage programs, activities, workflow steps, and collaboration." : "Local development mode. Use the seeded superadmin credentials or an account created by an admin."}</p>
+          <p>Sign in to manage programs, activities, workflows, procurement, and annual financial records.</p>
           <label>Email<input type="email" required value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} /></label>
           <label>Password<input type="password" minLength={8} required value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></label>
           {loginError && <div className="auth-error">{loginError}</div>}
@@ -1203,13 +1166,7 @@ function App() {
               >
                 <ClipboardList size={14} /> Programs
               </button>}
-              {systemRole === "superadmin" && <button
-                className={activeTab === "database" ? "top-nav-item active" : "top-nav-item"}
-                onClick={() => navigateTo("database", "Database browser opened")}
-              >
-                <Table2 size={14} /> Database
-              </button>}
-              {systemRole !== "superadmin" && <button
+              <button
                 className={
                   activeTab === "activities"
                     ? "top-nav-item active"
@@ -1218,7 +1175,10 @@ function App() {
                 onClick={() => navigateTo("activities", "Activities opened")}
               >
                 <Table2 size={14} /> Activities
-              </button>}
+              </button>
+              <button className={activeTab === "finance" ? "top-nav-item active" : "top-nav-item"} onClick={() => navigateTo("finance", "Financial management opened")}>
+                <CircleDollarSign size={14} /> Finance
+              </button>
               <button
                 className={
                   activeTab === "settings"
@@ -1257,39 +1217,51 @@ function App() {
             >
               {(profile?.full_name ?? "MA").slice(0, 2).toUpperCase()}
             </button>
-            {(session || localAuthenticated) && <button className="button secondary" onClick={() => { if (databaseConfigured) void signOut(); else { window.localStorage.removeItem(localSessionKey); setLocalAuthenticated(false); } }}>Sign out</button>}
+            {session && <button className="button secondary" onClick={() => void signOut()}>Sign out</button>}
           </div>
         </header>
         <div className="content-wrap">
           <section className="page-heading">
             <div>
               <p className="eyebrow">
-                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "programs" ? "Programs" : activeTab === "database" ? "Superadmin tools" : `${program.acronym} workspace`}
+                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "programs" ? "Programs" : activeTab === "finance" ? "Financial management" : activeTab === "settings" && settingsSection === "database" ? "Superadmin tools" : `${program.acronym} workspace`}
               </p>
-              <h1>{activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "programs" ? "Programs" : activeTab === "details" ? "Program details" : activeTab === "activities" ? "Activity register" : activeTab === "database" ? "Database browser" : "Settings"}</h1>
+              <h1>{activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "programs" ? "Programs" : activeTab === "details" ? "Program details" : activeTab === "activities" ? "Activity register" : activeTab === "finance" ? "Annual allocations & utilization" : "Settings"}</h1>
               <p className="page-intro">
-                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "Monitor all programs, activities, budgets, and user access." : "Monitor activity totals, utilization, and overdue work.") : activeTab === "programs" ? "Create programs, edit program details, and assign program administrators." : "Manage the program's operational sequence and fund-tracking rules."}
+                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "Monitor all programs, activities, budgets, and user access." : "Monitor activity totals, utilization, and overdue work.") : activeTab === "programs" ? "Create programs, edit program details, and assign program administrators." : activeTab === "finance" ? "Track appropriations, allotments, obligations, disbursements, accounts payable, cash advances, liquidation, and savings by fiscal year." : activeTab === "settings" && settingsSection === "database" ? "Browse database records in the read-only Superadmin database viewer." : "Manage the program's operational sequence and fund-tracking rules."}
               </p>
             </div>
             <div className="heading-actions">
               <span className="draft-pill">
                 <span /> {notice || "Unsaved changes"}
               </span>
-              <button
-                className="button primary"
-                onClick={() => {
-                  setSaved(true);
-                  setNotice("Program changes saved");
-                  setTimeout(() => setSaved(false), 2400);
-                }}
-              >
+              {isAdmin && program.id && activeTab !== "finance" && !(activeTab === "settings" && settingsSection === "database") && <button className="button primary" onClick={() => void saveProgramChanges()}>
                 <Save size={16} /> {saved ? "Saved" : "Save program"}
-              </button>
+              </button>}
             </div>
           </section>
+          {profile?.id === session?.user.id && systemRole === "user" && (
+            <section className="role-access-notice" role="status">
+              <div>
+                <strong>{profileLoadError?.userId === session?.user.id ? "Could not verify your administrator access" : "Some create and administration controls are restricted"}</strong>
+                <p>
+                  {profileLoadError?.userId === session?.user.id
+                    ? `Your profile role could not be loaded (${profileLoadError?.message}). Confirm migrations 003 and 004 are applied, then reload.`
+                    : `Signed in as ${session?.user.email ?? "this account"} with system role “user” and program role “${programRole}”. Creating programs requires Superadmin; adding workflow steps requires Superadmin or Program admin.`}
+                </p>
+                {profileLoadError?.userId !== session?.user.id && <details>
+                  <summary>Show SQL for the Supabase project owner</summary>
+                  <pre>{`update public.profiles
+set system_role = 'superadmin'
+where lower(email) = lower('your-auth-email@example.com');`}</pre>
+                  <small>Replace the example email with the email of your existing Supabase Auth user, run this in Supabase SQL Editor, then sign out and sign back in. Do not promote a program user.</small>
+                </details>}
+              </div>
+            </section>
+          )}
           {activeTab === "dashboard" ? (
             <div className="dashboard-grid">
-              <section className="dashboard-panel dashboard-program-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" ? "System portfolio" : "Program profile"}</p><h2>{systemRole === "superadmin" ? "All programs" : program.title}</h2></div><span className="dashboard-muted">{dashboardProgramCount} program{dashboardProgramCount === 1 ? "" : "s"}</span></div>{systemRole === "superadmin" ? <div className="superadmin-program-list">{programOptions.map((item) => <button className="superadmin-program-row" key={item.id} onClick={() => selectProgram(item.id)}><span className="program-summary-copy">{item.logo ? <img src={item.logo} alt="" /> : <ShieldCheck size={28} />}<span><strong>{item.acronym}</strong><small>{item.title}</small></span></span><span><b>{(activitiesByProgram[item.id] ?? []).length}</b><small>activities</small></span><ChevronDown size={17} /></button>)}</div> : <div className="program-summary"><div className="program-summary-copy">{program.logo ? <img src={program.logo} alt="" /> : <ShieldCheck size={28} />}<div><strong>{program.acronym}</strong><span>{program.agency}</span><span>{program.office}</span></div></div><div><small>Beneficiaries</small><strong>{program.beneficiaries}</strong></div><p>{program.description}</p></div>}</section>
+              <section className="dashboard-panel dashboard-program-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" ? "System portfolio" : "Program profile"}</p><h2>{systemRole === "superadmin" ? "All programs" : program.title}</h2></div><span className="dashboard-muted">{dashboardProgramCount} program{dashboardProgramCount === 1 ? "" : "s"}</span></div>{systemRole === "superadmin" ? <div className="superadmin-program-list">{programOptions.map((item) => <button className="superadmin-program-row" key={item.id} onClick={() => openProgramWorkspace(item.id)} aria-label={`Open ${item.acronym} finance and program workspace`}><span className="program-summary-copy">{item.logo ? <img src={item.logo} alt="" /> : <ShieldCheck size={28} />}<span><strong>{item.acronym}</strong><small>{item.title}</small></span></span><span><b>{(activitiesByProgram[item.id] ?? []).length}</b><small>activities</small></span><span className="program-row-open-label">Open workspace</span><ChevronDown size={17} /></button>)}</div> : <div className="program-summary"><div className="program-summary-copy">{program.logo ? <img src={program.logo} alt="" /> : <ShieldCheck size={28} />}<div><strong>{program.acronym}</strong><span>{program.agency}</span><span>{program.office}</span></div></div><div><small>Beneficiaries</small><strong>{program.beneficiaries}</strong></div><p>{program.description}</p></div>}</section>
               <div className="dashboard-card dashboard-total"><span className="dashboard-label">Total activities</span><strong>{dashboardTotals.activities}</strong><small>{systemRole === "superadmin" ? "Across all programs" : `Registered in ${program.acronym}`}</small></div>
               <div className="dashboard-card"><span className="dashboard-label">Approved budget</span><strong>₱{dashboardTotals.budget.toLocaleString()}</strong><small>Across all activities</small></div>
               <div className="dashboard-card"><span className="dashboard-label">Recorded spending</span><strong>₱{dashboardTotals.spent.toLocaleString()}</strong><small>{dashboardTotals.budget ? Math.round((dashboardTotals.spent / dashboardTotals.budget) * 100) : 0}% utilized</small></div>
@@ -1299,22 +1271,67 @@ function App() {
               <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" ? "Portfolio activity" : "Program activity"}</p><h2>Current progress</h2></div><span className="dashboard-muted">{dashboardActivities.length} activities</span></div><div className="dashboard-progress-list">{dashboardActivities.slice(0, 5).map((activity) => <div className="dashboard-progress-row" key={activity.id}><div><strong>{activity.name}</strong><small>{getNumberedStep(steps, activity.currentStep)}</small></div><div className="dashboard-progress-bar"><span style={{ width: `${activity.budget ? Math.min(100, (activity.spent / activity.budget) * 100) : 0}%` }} /></div><b>{activity.budget ? Math.round((activity.spent / activity.budget) * 100) : 0}%</b></div>)}</div></section>
               <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Completed work</p><h2>Finished activities</h2></div><span className="dashboard-muted">{dashboardActivities.filter((activity) => activity.status === "Completed").length} finished</span></div>{dashboardActivities.filter((activity) => activity.status === "Completed").length ? <div className="finished-list">{dashboardActivities.filter((activity) => activity.status === "Completed").map((activity) => <button className="finished-row" key={activity.id} onClick={() => { setSelectedActivityId(activity.id); setShowActivityDialog(true); }}><span className="finished-check"><Check size={13} /></span><span><strong>{activity.name}</strong><small>{activity.location} · Finished {activity.endDate}</small></span><span className="status-tag status-completed">Completed</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No finished activities</div>}</section>
             </div>
-          ) : activeTab === "database" && systemRole === "superadmin" ? (
-            <div className="database-browser">
-              <div className="database-browser-header">
-                <div><p className="eyebrow">Read-only inspection</p><h2>Database contents</h2><p>Browse application records without editing or exposing credentials.</p></div>
-                <button className="button secondary" onClick={() => void loadDatabaseBrowser()} disabled={databaseLoading}>{databaseLoading ? "Refreshing..." : "Refresh"}</button>
+          ) : activeTab === "finance" ? (
+            <section className="finance-page">
+              <div className="finance-toolbar">
+                <div><p className="eyebrow">{program.acronym} · Annual financial records</p><h2>Fiscal-year funding and utilization</h2><p>Each fiscal year and fund source is stored as its own database record.</p></div>
+                <label className="fiscal-year-select">Fiscal year<input type="number" min="2000" max="2200" value={selectedFiscalYear} onChange={(event) => setSelectedFiscalYear(Number(event.target.value))} /></label>
               </div>
-              <div className="database-browser-layout">
-                <nav className="database-table-list" aria-label="Database tables">
-                  {Object.keys(databaseTables).map((tableName) => <button className={selectedDatabaseTable === tableName ? "database-table-button active" : "database-table-button"} key={tableName} onClick={() => setSelectedDatabaseTable(tableName)}>{tableName}<span>{databaseTables[tableName].length}</span></button>)}
-                </nav>
-                <section className="database-records">
-                  <div className="database-records-heading"><strong>{selectedDatabaseTable}</strong><span>{databaseTables[selectedDatabaseTable]?.length ?? 0} records</span></div>
-                  {databaseTables[selectedDatabaseTable]?.length ? <div className="database-record-list">{databaseTables[selectedDatabaseTable].map((record, index) => <details className="database-record" key={String(record.id ?? index)}><summary>Record {index + 1}{record.id ? ` · ${String(record.id)}` : ""}</summary><pre>{JSON.stringify(record, null, 2)}</pre></details>)}</div> : <div className="empty-state">No records found. Click Refresh to load the latest contents.</div>}
-                </section>
-              </div>
-            </div>
+              {(() => {
+                const rows = annualAllocations.filter((row) => row.fiscal_year === selectedFiscalYear);
+                const totals = rows.reduce((total, row) => ({
+                  appropriation: total.appropriation + Number(row.appropriation),
+                  allotment: total.allotment + Number(row.allotment_received),
+                  obligations: total.obligations + Number(row.obligations),
+                  disbursements: total.disbursements + Number(row.disbursements),
+                }), { appropriation: 0, allotment: 0, obligations: 0, disbursements: 0 });
+                const peso = (amount: number) => `₱${amount.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                return <>
+                  <div className="finance-summary-grid">
+                    <article><small>Allocated budget / appropriation</small><strong>{peso(totals.appropriation)}</strong><span>Annual budget authority</span></article>
+                    <article><small>Allotment received</small><strong>{peso(totals.allotment)}</strong><span>Allotment utilization: {totals.allotment ? Math.round(totals.obligations / totals.allotment * 100) : 0}%</span></article>
+                    <article><small>Obligations</small><strong>{peso(totals.obligations)}</strong><span>Unobligated allotment: {peso(totals.allotment - totals.obligations)}</span></article>
+                    <article><small>Disbursements</small><strong>{peso(totals.disbursements)}</strong><span>Unpaid obligations: {peso(totals.obligations - totals.disbursements)}</span></article>
+                  </div>
+                  <div className="finance-content-grid">
+                    <section className="finance-card">
+                      <div className="section-title">
+                        <div><h3>Annual allocation records</h3><p>GAA, continuing appropriations, trust receipts, and other sources.</p></div>
+                        <div className="finance-records-actions">
+                          <span className="dashboard-muted">{rows.length} rows</span>
+                          {canEdit && <button className="button primary" onClick={() => { setEditingAllocationId(null); setAllocationDraft(createEmptyAllocationDraft()); setShowAllocationForm(true); }}><Plus size={15} /> Add FY {selectedFiscalYear} allocation</button>}
+                        </div>
+                      </div>
+                      {rows.length ? <div className="finance-table-wrap"><table className="finance-table"><thead><tr><th>Fund source</th><th>Allocated budget</th><th>Allotment received</th><th>Obligations</th><th>Disbursements</th><th>Unobligated allotment</th>{canEdit && <th>Actions</th>}</tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><strong>{row.fund_source}</strong><small>{row.remarks || `FY ${row.fiscal_year}`}</small></td><td>{peso(Number(row.appropriation))}</td><td>{peso(Number(row.allotment_received))}<small>{row.allotment_reference || "SARO/NCA ref. not recorded"}</small></td><td>{peso(Number(row.obligations))}<small>{row.obligation_reference || "ORS/BURS ref. not recorded"}</small></td><td>{peso(Number(row.disbursements))}<small>{row.disbursement_reference || "DV/ADA ref. not recorded"}</small></td><td>{peso(Number(row.allotment_received) - Number(row.obligations))}</td>{canEdit && <td><div className="finance-row-actions"><button className="button secondary" onClick={() => { setEditingAllocationId(row.id); setAllocationDraft({ fund_source: row.fund_source, allotment_reference: row.allotment_reference ?? "", obligation_reference: row.obligation_reference ?? "", disbursement_reference: row.disbursement_reference ?? "", appropriation: String(row.appropriation), allotment_received: String(row.allotment_received), obligations: String(row.obligations), disbursements: String(row.disbursements), accounts_payable: String(row.accounts_payable), cash_advances: String(row.cash_advances), liquidation: String(row.liquidation), savings: String(row.savings), remarks: row.remarks ?? "" }); setShowAllocationForm(true); }}>Edit</button><button className="icon-button danger" aria-label={`Delete ${row.fund_source} allocation`} onClick={() => void removeAllocation(row.id)}><Trash2 size={15} /></button></div></td>}</tr>)}</tbody></table></div> : <div className="empty-state">No financial records for FY {selectedFiscalYear} yet.</div>}
+                      {rows.map((row) => <details className="finance-record-details" key={`${row.id}-details`}><summary>Additional financial details · {row.fund_source}</summary><div><span>Accounts payable <b>{peso(Number(row.accounts_payable))}</b></span><span>Cash advances <b>{peso(Number(row.cash_advances))}</b></span><span>Liquidation <b>{peso(Number(row.liquidation))}</b></span><span>Savings <b>{peso(Number(row.savings))}</b></span></div></details>)}
+                    </section>
+                    {canEdit && showAllocationForm && <div className="dialog-overlay allocation-dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget && !allocationSaving) { setEditingAllocationId(null); setAllocationDraft(createEmptyAllocationDraft()); setShowAllocationForm(false); } }}>
+                      <dialog open className="activity-dialog allocation-dialog" aria-labelledby="allocation-dialog-title">
+                      <section className="finance-card allocation-form">
+                      <div className="section-title"><div><p className="eyebrow">FY {selectedFiscalYear} · Annual allocation</p><h3 id="allocation-dialog-title">{editingAllocationId ? "Edit allocation" : `Add FY ${selectedFiscalYear} allocation`}</h3><p>Amounts are validated against the appropriation-to-disbursement ceilings.</p></div><button className="icon-button" aria-label="Close allocation dialog" disabled={allocationSaving} onClick={() => { setEditingAllocationId(null); setAllocationDraft(createEmptyAllocationDraft()); setShowAllocationForm(false); }}><X size={17} /></button></div>
+                      <div className="finance-form-grid">
+                        <label>Fund source<input value={allocationDraft.fund_source} onChange={(event) => setAllocationDraft({ ...allocationDraft, fund_source: event.target.value })} placeholder="e.g. GAA, continuing appropriation" /></label>
+                        <label>Allocated budget / appropriation<input type="number" min="0" value={allocationDraft.appropriation} onChange={(event) => setAllocationDraft({ ...allocationDraft, appropriation: event.target.value })} /></label>
+                        <label>Allotment received<input type="number" min="0" value={allocationDraft.allotment_received} onChange={(event) => setAllocationDraft({ ...allocationDraft, allotment_received: event.target.value })} /><small>SARO / NCA or other allotment authority amount</small></label>
+                        <label>Allotment reference<input value={allocationDraft.allotment_reference} onChange={(event) => setAllocationDraft({ ...allocationDraft, allotment_reference: event.target.value })} placeholder="SARO / NCA number" /></label>
+                        <label>Obligations<input type="number" min="0" value={allocationDraft.obligations} onChange={(event) => setAllocationDraft({ ...allocationDraft, obligations: event.target.value })} /><small>Obligations recorded against the allotment</small></label>
+                        <label>Obligation reference<input value={allocationDraft.obligation_reference} onChange={(event) => setAllocationDraft({ ...allocationDraft, obligation_reference: event.target.value })} placeholder="ORS / BURS number" /></label>
+                        <label>Disbursements<input type="number" min="0" value={allocationDraft.disbursements} onChange={(event) => setAllocationDraft({ ...allocationDraft, disbursements: event.target.value })} /><small>Payments released against obligations</small></label>
+                        <label>Disbursement reference<input value={allocationDraft.disbursement_reference} onChange={(event) => setAllocationDraft({ ...allocationDraft, disbursement_reference: event.target.value })} placeholder="DV / ADA / check reference" /></label>
+                        <label>Accounts payable<input type="number" min="0" value={allocationDraft.accounts_payable} onChange={(event) => setAllocationDraft({ ...allocationDraft, accounts_payable: event.target.value })} /></label>
+                        <label>Cash advances<input type="number" min="0" value={allocationDraft.cash_advances} onChange={(event) => setAllocationDraft({ ...allocationDraft, cash_advances: event.target.value })} /></label>
+                        <label>Liquidation<input type="number" min="0" value={allocationDraft.liquidation} onChange={(event) => setAllocationDraft({ ...allocationDraft, liquidation: event.target.value })} /></label>
+                        <label>Savings / reverted balance<input type="number" min="0" value={allocationDraft.savings} onChange={(event) => setAllocationDraft({ ...allocationDraft, savings: event.target.value })} /></label>
+                        <label className="finance-form-wide">Remarks<input value={allocationDraft.remarks} onChange={(event) => setAllocationDraft({ ...allocationDraft, remarks: event.target.value })} placeholder="Reference, fund validity, or notes" /></label>
+                      </div>
+                      <div className="finance-form-actions"><button className="button secondary" disabled={allocationSaving} onClick={() => { setEditingAllocationId(null); setAllocationDraft(createEmptyAllocationDraft()); setShowAllocationForm(false); }}>{editingAllocationId ? "Cancel edit" : "Cancel"}</button><button className="button primary" disabled={allocationSaving} onClick={() => void saveAllocation()}><Save size={14} /> {allocationSaving ? "Saving..." : "Save to online database"}</button></div>
+                      </section>
+                      </dialog>
+                    </div>}
+                  </div>
+                </>;
+              })()}
+            </section>
           ) : (
           <div className={`builder-layout ${activeTab === "activities" ? "activities-layout" : ""}`}>
             <section className="builder-panel">
@@ -1322,7 +1339,10 @@ function App() {
                 <div className="programs-page">
                   <div className="section-title"><div><p className="eyebrow">Superadmin workspace</p><h2>All programs</h2><p>Select a program to view or edit its details.</p></div><button className="button primary" onClick={() => setShowProgramCreateDialog(true)}><Plus size={15} /> Create program</button></div>
                   <div className="programs-list">
-                    {programOptions.map((item) => <button className={`program-list-row ${item.id === program.id ? "selected" : ""}`} key={item.id} onClick={() => { setProgram(item); setSteps(item.steps); setActivities(activitiesByProgram[item.id] ?? []); if (!databaseConfigured) setMembers(readLocalProgramMembers(item.id)); setProgramDialogEditing(false); setShowProgramDetailDialog(true); }}><span className="program-list-mark">{item.acronym.slice(0, 2)}</span><span><strong>{item.title}</strong><small>{item.acronym} · {item.agency}</small></span><span className="program-list-count">{(activitiesByProgram[item.id] ?? []).length} activities</span><ChevronDown size={18} /></button>)}
+                    {programOptions.map((item) => <div className={`program-list-entry ${item.id === program.id ? "selected" : ""}`} key={item.id}>
+                      <button className="program-list-row" onClick={() => openProgramWorkspace(item.id)} aria-label={`Open ${item.acronym} finance and program workspace`}><span className="program-list-mark">{item.acronym.slice(0, 2)}</span><span><strong>{item.title}</strong><small>{item.acronym} · {item.agency}</small></span><span className="program-list-count">{(activitiesByProgram[item.id] ?? []).length} activities</span><span className="program-row-open-label">Open workspace</span><ChevronDown size={18} /></button>
+                      <button className="button secondary program-list-details" onClick={() => { selectProgram(item.id); setProgramDialogEditing(false); setProgramDialogTab("details"); setShowProgramDetailDialog(true); }}><Settings size={14} /> Settings</button>
+                    </div>)}
                   </div>
                 </div>
               ) : showProgramDetailDialog || activeTab === "details" ? (
@@ -1337,7 +1357,7 @@ function App() {
                         unit.
                       </p>
                     </div>
-                    <div className="detail-actions">{!programDialogEditing && programDialogTab === "details" && <button className="button secondary" onClick={() => setProgramDialogEditing(true)}>Edit program</button>}{programDialogEditing && <button className="button primary" onClick={() => { setProgramDialogEditing(false); setNotice("Program details saved"); }}><Save size={14} /> Save</button>}<span className="step-number">01</span></div>
+                    <div className="detail-actions">{!programDialogEditing && programDialogTab === "details" && <button className="button secondary" onClick={() => setProgramDialogEditing(true)}>Edit program</button>}{programDialogEditing && <button className="button primary" onClick={() => void saveProgramChanges().then((success) => { if (success) setProgramDialogEditing(false); })}><Save size={14} /> Save</button>}<span className="step-number">01</span></div>
                   </div>
                   <button className="icon-button profile-dialog-close" aria-label="Close program details" onClick={() => { setShowProgramDetailDialog(false); setActiveTab("programs"); }}><X size={17} /></button>
                   <div className="program-dialog-tabs"><button className={programDialogTab === "details" ? "activity-view active" : "activity-view"} onClick={() => setProgramDialogTab("details")}>Program details</button><button className={programDialogTab === "admins" ? "activity-view active" : "activity-view"} onClick={() => setProgramDialogTab("admins")}>Admin accounts</button></div>
@@ -1492,7 +1512,34 @@ function App() {
                       />
                     </span>
                   </label>
-                  </> : <div className="program-admins-panel"><div className="section-title"><div><p className="eyebrow">Access management</p><h2>Program administrators</h2><p>View, edit, or revoke admin access for {program.acronym}.</p></div><button className="button primary" onClick={() => setShowProgramAdminDialog(true)}><Plus size={15} /> Add admin</button></div><div className="program-admin-list">{members.filter((member) => member.role === "program_admin").map((member) => <div className="settings-row" key={member.id}><span>{member.profile?.full_name ?? "Unnamed admin"}</span><small>{member.profile?.email}</small><b>Program admin</b><button className="icon-button" aria-label="Edit program admin" onClick={() => { setAccountForm({ email: member.profile?.email ?? "", fullName: member.profile?.full_name ?? "", password: "", role: "program_admin" }); setMemberDialog(member); }}><Settings size={15} /></button><button className="icon-button danger" aria-label="Delete program admin" onClick={() => void deleteMemberAccount(member)}><Trash2 size={15} /></button></div>)}{members.filter((member) => member.role === "program_admin").length === 0 && <div className="empty-state">No program admin account assigned yet.</div>}</div></div>}
+                  </> : <div className="program-admins-panel">
+                    <div className="section-title">
+                      <div><p className="eyebrow">Access management</p><h2>Program accounts</h2><p>Manage program admins and viewers for {program.acronym}.</p></div>
+                    </div>
+                    <div className="member-invite">
+                      <h3>Create program account</h3>
+                      <div className="settings-create">
+                        <input value={accountForm.fullName} onChange={(event) => setAccountForm({ ...accountForm, fullName: event.target.value })} placeholder="Full name" />
+                        <input type="email" value={accountForm.email} onChange={(event) => setAccountForm({ ...accountForm, email: event.target.value })} placeholder="Email address" />
+                        <input type="password" minLength={8} value={accountForm.password} onChange={(event) => setAccountForm({ ...accountForm, password: event.target.value })} placeholder="Temporary password (8+ characters)" />
+                        <select value={accountForm.role === "program_admin" && systemRole === "superadmin" ? "program_admin" : "viewer"} disabled={systemRole !== "superadmin"} onChange={(event) => setAccountForm({ ...accountForm, role: event.target.value === "program_admin" ? "program_admin" : "viewer" })} aria-label="Program account role">
+                          {systemRole === "superadmin" && <option value="program_admin">Program admin</option>}
+                          <option value="viewer">Viewer</option>
+                        </select>
+                        <button className="button secondary" onClick={() => void createAccount()}><Plus size={15} /> Create {systemRole === "superadmin" && accountForm.role === "program_admin" ? "program admin" : "viewer"}</button>
+                      </div>
+                    </div>
+                    <div className="program-admin-list">
+                      {members.map((member) => <div className="settings-row" key={member.id}>
+                        <span>{member.profile?.full_name ?? "Unnamed account"}</span>
+                        <small>{member.profile?.email}</small>
+                        <b>{member.role}</b>
+                        <button className="icon-button" aria-label={`Edit ${member.profile?.full_name ?? "account"}`} onClick={() => { setAccountForm({ email: member.profile?.email ?? "", fullName: member.profile?.full_name ?? "", password: "", role: member.role === "program_admin" ? "program_admin" : "viewer" }); setMemberDialog(member); }}><Settings size={15} /></button>
+                        <button className="icon-button danger" aria-label={`Remove ${member.profile?.full_name ?? "account"} from this program`} onClick={() => void deleteMemberAccount(member)}><Trash2 size={15} /></button>
+                      </div>)}
+                      {members.length === 0 && <div className="empty-state">No program accounts assigned yet.</div>}
+                    </div>
+                  </div>}
                 </dialog>
                 </div>
               ) : null}
@@ -1673,7 +1720,7 @@ function App() {
                             </div>
                             <div className="detail-actions">
                               {canEdit && <button className="button secondary" onClick={() => editActivity(selectedActivity)}>Edit activity</button>}
-                              <button className="icon-button danger" aria-label="Delete activity" onClick={() => deleteActivity(selectedActivity.id)}><Trash2 size={17} /></button>
+                              {isAdmin && <button className="icon-button danger" aria-label="Delete activity" onClick={() => deleteActivity(selectedActivity.id)}><Trash2 size={17} /></button>}
                               <button className="icon-button" aria-label="Close activity" onClick={() => { setSelectedActivityId(""); setShowActivityDialog(false); }}><X size={17} /></button>
                             </div>
                           </div>
@@ -1916,6 +1963,7 @@ function App() {
                         <div className="activity-dialog-tabs" role="tablist" aria-label="Activity details">
                           <button className={activityDialogTab === "design" ? "activity-dialog-tab active" : "activity-dialog-tab"} onClick={() => setActivityDialogTab("design")}>Activity design</button>
                           <button className={activityDialogTab === "workflow" ? "activity-dialog-tab active" : "activity-dialog-tab"} onClick={() => setActivityDialogTab("workflow")}>Workflow</button>
+                          <button className={activityDialogTab === "procurement" ? "activity-dialog-tab active" : "activity-dialog-tab"} onClick={() => setActivityDialogTab("procurement")}>Suppliers & procurement</button>
                         </div>
                         {activityDialogTab === "workflow" ? (
                           <div className="timeline-dialog-body">
@@ -1944,6 +1992,8 @@ function App() {
                               })}
                             </div>
                           </div>
+                        ) : activityDialogTab === "procurement" ? (
+                          procurementPanel
                         ) : (
                         <div className="activity-design-panel">
                           <div className="activity-program-details">
@@ -1990,26 +2040,30 @@ function App() {
                   <div className="section-title">
                     <div>
                       <p className="eyebrow">Administration</p>
-                      <h2>Organization & fund workflow</h2>
-                      <p>Maintain the reusable units and fund stages available to program administrators.</p>
+                      <h2>Program settings</h2>
+                      <p>Manage the program workflow and review database records where permitted.</p>
                     </div>
                   </div>
                   <div className="settings-switcher">
-                    {isAdmin && <button className={settingsSection === "organizations" ? "settings-switch active" : "settings-switch"} onClick={() => setSettingsSection("organizations")}>Users & organizations</button>}
                     <button className={settingsSection === "fund-workflow" ? "settings-switch active" : "settings-switch"} onClick={() => setSettingsSection("fund-workflow")}>Fund workflow</button>
                     {isAdmin && <button className={settingsSection === "audit" ? "settings-switch active" : "settings-switch"} onClick={() => setSettingsSection("audit")}>Audit log</button>}
+                    {systemRole === "superadmin" && <button className={settingsSection === "database" ? "settings-switch active" : "settings-switch"} onClick={() => { setSettingsSection("database"); void loadDatabaseBrowser(); }}>Database</button>}
                   </div>
-                  {settingsSection === "organizations" && isAdmin ? (
-                    <div className="settings-list">
-                      {systemRole !== "superadmin" && <div className="member-invite">
-                        <h3>Create program account</h3>
-                        <div className="settings-create"><input value={accountForm.fullName} onChange={(event) => setAccountForm({ ...accountForm, fullName: event.target.value })} placeholder="Full name" /><input type="email" value={accountForm.email} onChange={(event) => setAccountForm({ ...accountForm, email: event.target.value })} placeholder="Email address" /><input type="password" minLength={8} value={accountForm.password} onChange={(event) => setAccountForm({ ...accountForm, password: event.target.value })} placeholder="Temporary password" /><span className="account-role-label">Viewer for {program.acronym}</span><button className="button primary" onClick={() => void createAccount("viewer")}><Plus size={15} /> Create viewer</button></div>
-                      </div>}
-                      <h3>Program users</h3>
-                      {members.map((member) => <div className="settings-row" key={member.id}><span>{member.profile?.full_name ?? member.profile?.email ?? member.user_id}</span><small>{member.profile?.email}</small><b>{member.role}</b><button className="icon-button" aria-label={`Edit ${member.profile?.full_name ?? "account"}`} onClick={() => { setAccountForm({ email: member.profile?.email ?? "", fullName: member.profile?.full_name ?? "", password: "", role: member.role === "program_admin" ? "program_admin" : "viewer" }); setMemberDialog(member); }}><Settings size={15} /></button><button className="icon-button danger" aria-label={`Delete ${member.profile?.full_name ?? "account"}`} onClick={() => void deleteMemberAccount(member)}><Trash2 size={15} /></button></div>)}
-                      <h3>Organizations</h3>
-                      <div className="settings-create"><input value={organizationDraft} onChange={(event) => setOrganizationDraft(event.target.value)} placeholder="Add organization or responsible unit" /><button className="button primary" onClick={addOrganization}><Plus size={15} /> Add</button></div>
-                      {organizations.map((organization, index) => <div className="settings-row" key={`${organization}-${index}`}><span>{organization}</span><button className="icon-button danger" aria-label={`Delete ${organization}`} onClick={() => setOrganizations((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button></div>)}
+                  {settingsSection === "database" && systemRole === "superadmin" ? (
+                    <div className="database-browser">
+                      <div className="database-browser-header">
+                        <div><p className="eyebrow">Read-only inspection</p><h2>Database contents</h2><p>Browse application records without editing or exposing credentials.</p></div>
+                        <button className="button secondary" onClick={() => void loadDatabaseBrowser()} disabled={databaseLoading}>{databaseLoading ? "Refreshing..." : "Refresh"}</button>
+                      </div>
+                      <div className="database-browser-layout">
+                        <nav className="database-table-list" aria-label="Database tables">
+                          {Object.keys(databaseTables).map((tableName) => <button className={selectedDatabaseTable === tableName ? "database-table-button active" : "database-table-button"} key={tableName} onClick={() => setSelectedDatabaseTable(tableName)}>{tableName}<span>{databaseTables[tableName].length}</span></button>)}
+                        </nav>
+                        <section className="database-records">
+                          <div className="database-records-heading"><strong>{selectedDatabaseTable}</strong><span>{databaseTables[selectedDatabaseTable]?.length ?? 0} records</span></div>
+                          {databaseTables[selectedDatabaseTable]?.length ? <div className="database-record-list">{databaseTables[selectedDatabaseTable].map((record, index) => <details className="database-record" key={String(record.id ?? index)}><summary>Record {index + 1}{record.id ? ` · ${String(record.id)}` : ""}</summary><pre>{JSON.stringify(record, null, 2)}</pre></details>)}</div> : <div className="empty-state">No records found. Click Refresh to load the latest contents.</div>}
+                        </section>
+                      </div>
                     </div>
                   ) : settingsSection === "audit" && isAdmin ? (
                     <div className="audit-list">{auditLogs.length ? auditLogs.map((log) => <div className="audit-row" key={log.id}><strong>{log.action} {log.entity_type}</strong><span>{log.actor?.full_name ?? "System"}</span><small>{new Date(log.created_at).toLocaleString()}</small></div>) : <div className="empty-state">No audit events yet</div>}</div>
@@ -2029,9 +2083,6 @@ function App() {
                             className={`workflow-row ${selectedId === step.id ? "selected" : ""} ${!step.active ? "inactive" : ""}`}
                             onClick={() => {
                               setSelectedId(step.id);
-                              if (!step.subSteps?.length) {
-                                setSteps((current) => current.map((item) => item.id === step.id ? { ...item, subSteps: withSampleSubSteps([item])[0].subSteps } : item));
-                              }
                               setStepDialogEditing(canEdit);
                               setShowStepDialog(true);
                             }}
@@ -2200,7 +2251,7 @@ function App() {
             <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowProgramCreateDialog(false); }}>
               <dialog open className="activity-dialog program-create-dialog">
                 <div className="detail-heading"><div><p className="eyebrow">Superadmin workspace</p><h2>Create program</h2><p className="detail-subtitle">Add the program details first, then assign its administrator from the program details dialog.</p></div><button className="icon-button" aria-label="Close create program dialog" onClick={() => setShowProgramCreateDialog(false)}><X size={17} /></button></div>
-                <div className="program-create-grid"><input value={programForm.title} onChange={(event) => setProgramForm({ ...programForm, title: event.target.value })} placeholder="Program name" /><input value={programForm.acronym} onChange={(event) => setProgramForm({ ...programForm, acronym: event.target.value })} placeholder="Acronym" /><input value={programForm.agency} onChange={(event) => setProgramForm({ ...programForm, agency: event.target.value })} placeholder="Agency" /><input value={programForm.office} onChange={(event) => setProgramForm({ ...programForm, office: event.target.value })} placeholder="Office / subtitle" /><input value={programForm.beneficiaries} onChange={(event) => setProgramForm({ ...programForm, beneficiaries: event.target.value })} placeholder="Target beneficiaries" /><input value={programForm.units} onChange={(event) => setProgramForm({ ...programForm, units: event.target.value })} placeholder="Operating units" /><textarea value={programForm.description} onChange={(event) => setProgramForm({ ...programForm, description: event.target.value })} placeholder="Program description" rows={3} /><button className="button primary" onClick={() => void createProgramForSuperadmin()}><Plus size={15} /> Create program</button></div>
+                        <div className="program-create-grid"><input value={programForm.title} onChange={(event) => { setProgramForm({ ...programForm, title: event.target.value }); setProgramCreateError(""); }} placeholder="Program name" /><input value={programForm.acronym} onChange={(event) => { setProgramForm({ ...programForm, acronym: event.target.value }); setProgramCreateError(""); }} placeholder="Acronym" /><input value={programForm.agency} onChange={(event) => setProgramForm({ ...programForm, agency: event.target.value })} placeholder="Agency" /><input value={programForm.office} onChange={(event) => setProgramForm({ ...programForm, office: event.target.value })} placeholder="Office / subtitle" /><input value={programForm.beneficiaries} onChange={(event) => setProgramForm({ ...programForm, beneficiaries: event.target.value })} placeholder="Target beneficiaries" /><input value={programForm.units} onChange={(event) => setProgramForm({ ...programForm, units: event.target.value })} placeholder="Operating units" /><textarea value={programForm.description} onChange={(event) => setProgramForm({ ...programForm, description: event.target.value })} placeholder="Program description" rows={3} />{programCreateError && <p className="program-create-error" role="alert">{programCreateError}</p>}<button className="button primary" onClick={() => void createProgramForSuperadmin()}><Plus size={15} /> Create program</button></div>
               </dialog>
             </div>
           )}
@@ -2210,15 +2261,6 @@ function App() {
               <dialog open className="activity-dialog account-dialog">
                 <div className="detail-heading"><div><p className="eyebrow">{program.acronym} account</p><h2>Edit account</h2><p className="detail-subtitle">Update the user name or program role.</p></div><button className="icon-button" aria-label="Close account editor" onClick={() => setMemberDialog(null)}><X size={17} /></button></div>
                 <div className="account-dialog-form"><label>Full name<input value={accountForm.fullName} onChange={(event) => setAccountForm({ ...accountForm, fullName: event.target.value })} /></label><label>Email<input value={accountForm.email} disabled /></label><label>Role<select value={accountForm.role === "program_admin" ? "program_admin" : "viewer"} disabled={systemRole !== "superadmin"} onChange={(event) => setAccountForm({ ...accountForm, role: event.target.value as "program_admin" | "viewer" })}><option value="program_admin">Program admin</option><option value="viewer">Viewer</option></select></label><button className="button primary" onClick={() => void updateMemberAccount()}><Save size={14} /> Save account</button></div>
-              </dialog>
-            </div>
-          )}
-
-          {showProgramDetailDialog && showProgramAdminDialog && (
-            <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowProgramAdminDialog(false); }}>
-              <dialog open className="activity-dialog account-dialog">
-                <div className="detail-heading"><div><p className="eyebrow">{program.acronym}</p><h2>Create program admin</h2><p className="detail-subtitle">This account will manage {program.title} and create its viewers.</p></div><button className="icon-button" aria-label="Close program admin dialog" onClick={() => setShowProgramAdminDialog(false)}><X size={17} /></button></div>
-                <div className="account-dialog-form"><label>Full name<input value={accountForm.fullName} onChange={(event) => setAccountForm({ ...accountForm, fullName: event.target.value, role: "program_admin" })} placeholder="Program admin name" /></label><label>Email<input type="email" value={accountForm.email} onChange={(event) => setAccountForm({ ...accountForm, email: event.target.value, role: "program_admin" })} placeholder="admin@example.com" /></label><label>Password<input type="password" minLength={8} value={accountForm.password} onChange={(event) => setAccountForm({ ...accountForm, password: event.target.value, role: "program_admin" })} placeholder="At least 8 characters" /></label><button className="button primary" onClick={() => void createAccount("program_admin").then(() => setShowProgramAdminDialog(false))}><Save size={14} /> Create admin account</button></div>
               </dialog>
             </div>
           )}

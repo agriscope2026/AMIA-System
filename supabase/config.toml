@@ -1,0 +1,8 @@
+[functions.create-managed-user]
+verify_jwt = false
+
+[functions.manage-program-user]
+verify_jwt = false
+
+[functions.invite-program-user]
+verify_jwt = false
