@@ -68,6 +68,7 @@ type Activity = {
   endDate: string;
   budget: number;
   spent: number;
+  unitemizedObligations: number;
   activityDesign?: string;
   status: string;
   currentStep: string;
@@ -122,6 +123,23 @@ function calendarActivityColorClass(status: string) {
 }
 
 type ProcurementDraft = Omit<ProcurementItem, "id" | "program_id" | "activity_id">;
+type ProcurementDraftEntry = ProcurementDraft & { draftKey: string; id?: string };
+const createProcurementDraft = (): ProcurementDraftEntry => ({
+  draftKey: crypto.randomUUID(),
+  category: "Other goods or services",
+  item_description: "",
+  supplier_name: "",
+  procurement_method: "Small Value Procurement",
+  purchase_order_number: "",
+  quantity: 1,
+  unit: "lot",
+  unit_cost: 0,
+  workflow_step_id: null,
+  obligated_amount: 0,
+  obligation_status: "Not obligated",
+  delivery_status: "For procurement",
+  delivery_date: null,
+});
 type AppPlanRowDraft = {
   project_title: string;
   implementing_unit: string;
@@ -285,6 +303,7 @@ const mapDatabaseActivity = (activity: import("./lib/database").DatabaseActivity
   endDate: activity.target_end_date ?? "",
   budget: Number(activity.approved_budget),
   spent: Number(activity.recorded_spending),
+  unitemizedObligations: Number(activity.unitemized_obligations ?? activity.recorded_spending),
   activityDesign: activity.activity_design ?? "",
   status: getActivityStatus(steps, steps.find((step) => step.id === activity.current_step_id)?.title ?? steps[0]?.title ?? "", activity.current_sub_step ?? ""),
   currentStep: steps.find((step) => step.id === activity.current_step_id)?.title ?? steps[0]?.title ?? "",
@@ -362,6 +381,7 @@ function App() {
   const [selectedActivityId, setSelectedActivityId] = useState("");
   const [dashboardActivityDialogTarget, setDashboardActivityDialogTarget] = useState<Activity | null>(null);
   const [expandedTimelineSteps, setExpandedTimelineSteps] = useState<Record<string, boolean>>({});
+  const [workflowStepSelections, setWorkflowStepSelections] = useState<Record<string, string>>({});
   const [pendingTimelineStep, setPendingTimelineStep] = useState<{ stepTitle: string; subStep: string; shouldComplete: boolean } | null>(null);
   const [remarkDrafts, setRemarkDrafts] = useState<Record<string, string>>({});
   const [session, setSession] = useState<Awaited<ReturnType<typeof getAuthSession>>>(null);
@@ -413,12 +433,18 @@ function App() {
   const [beneficiaryDeleting, setBeneficiaryDeleting] = useState(false);
   const [beneficiaryForm, setBeneficiaryForm] = useState({
     program_id: "",
-    activity_id: "",
+    activity_ids: [] as string[],
     beneficiary_name: "",
-    beneficiary_code: "",
+    beneficiary_acronym: "",
+    fca_category: "",
+    membership_count: "",
+    contact_person: "",
+    contact_number: "",
+    additional_details: "",
+    province: "",
     municipality: "",
     barangay: "",
-    assistance_received: "",
+    other_assistance_interventions: "",
   });
   const [showActivityForm, setShowActivityForm] = useState(false);
   const [editingActivityId, setEditingActivityId] = useState<string | null>(null);
@@ -450,6 +476,7 @@ function App() {
   const [procurementPlanSheet, setProcurementPlanSheet] = useState<ProcurementPlanSheet | null>(null);
   const [procurementPlanItems, setProcurementPlanItems] = useState<ProcurementPlanItem[]>([]);
   const [procurementPlanDrafts, setProcurementPlanDrafts] = useState<Record<string, AppPlanRowDraft>>({});
+  const [financeCellEditor, setFinanceCellEditor] = useState<{ row: ProcurementPlanItem | null; field: keyof AppPlanRowDraft; label: string } | null>(null);
   const [procurementPlanHeader, setProcurementPlanHeader] = useState({ is_continuing: false, plan_status: "Indicative" as "Indicative" | "Final", version_no: "" });
   const [procurementPlanLoading, setProcurementPlanLoading] = useState(false);
   const [procurementPlanSavingId, setProcurementPlanSavingId] = useState<string | null>(null);
@@ -468,20 +495,8 @@ function App() {
   const [dashboardAppBudgetsByProgram, setDashboardAppBudgetsByProgram] = useState<Record<string, number>>({});
   const [showDashboardCardSettings, setShowDashboardCardSettings] = useState(false);
   const [procurementItems, setProcurementItems] = useState<ProcurementItem[]>([]);
-  const [editingProcurementItemId, setEditingProcurementItemId] = useState<string | null>(null);
+  const [procurementDrafts, setProcurementDrafts] = useState<ProcurementDraftEntry[]>([]);
   const [procurementLoadedActivityId, setProcurementLoadedActivityId] = useState<string | null>(null);
-  const [procurementDraft, setProcurementDraft] = useState<ProcurementDraft>({
-    category: "Food and catering",
-    item_description: "",
-    supplier_name: "",
-    procurement_method: "Small Value Procurement",
-    purchase_order_number: "",
-    quantity: 1,
-    unit: "lot",
-    unit_cost: 0,
-    delivery_status: "For procurement",
-    delivery_date: null,
-  });
   const activeSteps = useMemo(
     () => steps.filter((step) => step.active),
     [steps],
@@ -505,10 +520,13 @@ function App() {
   const unscheduledCalendarActivities = activities.filter((activity) => !activity.startDate);
   const selectedStep = steps.find((step) => step.id === selectedId) ?? steps[0];
   const today = new Date().toISOString().slice(0, 10);
+  const currentFiscalYear = new Date().getFullYear();
   const dashboardActivityMap = useMemo(() => ({ ...activitiesByProgram, [program.id]: activities }), [activities, activitiesByProgram, program.id]);
   const allDashboardActivities = systemRole === "superadmin" ? Object.values(dashboardActivityMap).flat() : activities;
   const dashboardYearOptions = Array.from(new Set([
-    new Date().getFullYear(),
+    currentFiscalYear - 1,
+    currentFiscalYear,
+    currentFiscalYear + 1,
     ...Object.values(allocationsByProgram).flat().map((allocation) => allocation.fiscal_year),
     ...allDashboardActivities.map(getActivityYear).filter((year): year is number => year !== null),
   ])).sort((a, b) => b - a);
@@ -855,17 +873,20 @@ function App() {
     void loadProcurementItems(selectedActivityId).then((items) => {
       if (!currentRequest) return;
       setProcurementItems(items);
+      setProcurementDrafts([]);
       setProcurementLoadedActivityId(selectedActivityId);
     }).catch((error: unknown) => {
       if (!currentRequest) return;
       setNotice(error instanceof Error ? `Could not load procurement items: ${error.message}` : "Could not load procurement items");
       setProcurementItems([]);
+      setProcurementDrafts([]);
       setProcurementLoadedActivityId(selectedActivityId);
     });
     return () => { currentRequest = false; };
   }, [selectedActivityId, showActivityDialog]);
 
   const canManageFinance = programRole === "program_admin";
+  const canEditBeneficiaries = systemRole !== "superadmin" && programRole === "program_admin";
   const canEdit = systemRole === "superadmin" || programRole === "program_admin" || programRole === "editor";
   const isAdmin = systemRole === "superadmin" || programRole === "program_admin";
   const handleLogin = async (event: React.FormEvent) => {
@@ -1337,6 +1358,23 @@ function App() {
       setNotice("Obligations must be between zero and the approved activity budget");
       return;
     }
+    let unitemizedObligations = existingActivity.unitemizedObligations;
+    if (canManageFinance) {
+      try {
+        const procurementRecords = await loadProcurementItems(existingActivity.id);
+        const supplierObligations = procurementRecords
+          .filter((item) => item.obligation_status === "Partially obligated" || item.obligation_status === "Obligated")
+          .reduce((total, item) => total + Number(item.obligated_amount), 0);
+        if (spent < supplierObligations) {
+          setNotice(`Activity obligations cannot be less than the ${supplierObligations.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} already assigned to suppliers`);
+          return;
+        }
+        unitemizedObligations = spent - supplierObligations;
+      } catch (error) {
+        setNotice(`Could not verify supplier obligations: ${getDatabaseErrorMessage(error)}`);
+        return;
+      }
+    }
     const activity: Activity = {
       ...existingActivity,
       name: newActivity.name.trim(),
@@ -1346,6 +1384,7 @@ function App() {
       fiscalYear: newActivity.startDate ? Number(newActivity.startDate.slice(0, 4)) : existingActivity.fiscalYear,
       budget,
       spent,
+      unitemizedObligations,
       activityDesign: newActivity.activityDesign.trim(),
       status: getActivityStatus(steps, newActivity.currentStep || steps[0]?.title || "Activity Planning", newActivity.currentSubStep || ""),
       currentStep: newActivity.currentStep || steps[0]?.title || "Activity Planning",
@@ -1361,6 +1400,7 @@ function App() {
         fiscal_year: activity.fiscalYear ?? null,
         approved_budget: activity.budget,
         recorded_spending: activity.spent,
+        unitemized_obligations: activity.unitemizedObligations,
         status: activity.status,
         current_step_id: currentStepId,
         current_sub_step: activity.currentSubStep ?? null,
@@ -1438,6 +1478,12 @@ function App() {
   const selectedActivity =
     activities.find((activity) => activity.id === selectedActivityId) ??
     activities[0];
+  const selectedActivityWorkflowStep = selectedActivity
+    ? activeSteps.find((step) => step.id === workflowStepSelections[selectedActivity.id])
+      ?? activeSteps.find((step) => step.title === selectedActivity.currentStep)
+      ?? activeSteps[0]
+    : undefined;
+  const selectedActivityWorkflowIndex = selectedActivityWorkflowStep ? activeSteps.indexOf(selectedActivityWorkflowStep) : -1;
   const beneficiaryScopeKey = systemRole === "superadmin" ? beneficiaryProgramFilter : program.id;
   const beneficiaryTableLoading = Boolean(beneficiaryScopeKey) && beneficiaryLoadedScope !== beneficiaryScopeKey;
   const visibleBeneficiaryRecords = beneficiaryTableLoading || !beneficiaryScopeKey ? [] : beneficiaryRecords;
@@ -1445,15 +1491,23 @@ function App() {
     const query = beneficiarySearch.trim().toLowerCase();
     if (!query) return true;
     const programName = programOptions.find((option) => option.id === record.program_id)?.title ?? "";
-    const activityName = (activitiesByProgram[record.program_id] ?? []).find((activity) => activity.id === record.activity_id)?.name ?? "";
+    const activityNames = (activitiesByProgram[record.program_id] ?? [])
+      .filter((activity) => record.activity_ids.includes(activity.id))
+      .map((activity) => activity.name);
     return [
       record.beneficiary_name,
-      record.beneficiary_code,
+      record.beneficiary_acronym,
+      record.fca_category,
+      record.membership_count?.toString(),
+      record.contact_person,
+      record.contact_number,
+      record.additional_details,
+      record.province,
       record.municipality,
       record.barangay,
-      record.assistance_received,
+      record.other_assistance_interventions,
       programName,
-      activityName,
+      ...activityNames,
     ].some((value) => value?.toLowerCase().includes(query));
   });
   const filteredActivities = activities.filter((activity) => {
@@ -1684,23 +1738,23 @@ function App() {
       setNotice(`APP details were not saved: ${getDatabaseErrorMessage(error)}`);
     }
   };
-  const saveProcurementPlanRow = async (row: ProcurementPlanItem | null) => {
+  const saveProcurementPlanRow = async (row: ProcurementPlanItem | null): Promise<boolean> => {
     if (!canManageFinance) {
       setNotice("Only this program's program admin can edit financial records");
-      return;
+      return false;
     }
     const rowKey = procurementPlanRowKey(row);
     const draft = procurementPlanDrafts[rowKey] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft());
     const estimatedBudget = Number(draft.estimated_budget);
     if (!draft.project_title.trim() || !draft.implementing_unit.trim() || !Number.isFinite(estimatedBudget) || estimatedBudget < 0) {
       setNotice("Enter a project title, implementing unit, and a valid non-negative estimated budget");
-      return;
+      return false;
     }
     const startDate = draft.procurement_start ? `${draft.procurement_start}-01` : null;
     const endDate = draft.procurement_end ? `${draft.procurement_end}-01` : null;
     if (startDate && endDate && startDate > endDate) {
       setNotice("The procurement end month must be the same as or later than the start month");
-      return;
+      return false;
     }
     setProcurementPlanSavingId(rowKey);
     try {
@@ -1740,8 +1794,10 @@ function App() {
       } catch (error) {
         setNotice(`APP project saved, but its activity could not be refreshed: ${getDatabaseErrorMessage(error)}`);
       }
+      return true;
     } catch (error) {
       setNotice(`APP project was not saved: ${getDatabaseErrorMessage(error)}`);
+      return false;
     } finally {
       setProcurementPlanSavingId(null);
     }
@@ -1905,39 +1961,48 @@ function App() {
       }}
     />
   );
-  const addProcurementItem = async () => {
+  const updateProcurementDraft = (draftKey: string, updates: Partial<ProcurementDraft>) => {
+    setProcurementDrafts((current) => current.map((draft) => draft.draftKey === draftKey ? { ...draft, ...updates } : draft));
+  };
+  const saveProcurementDraft = async (draft: ProcurementDraftEntry) => {
     if (!canManageFinance) {
       setNotice("Only this program's program admin can edit procurement financial records");
       return;
     }
-    if (!selectedActivity || !procurementDraft.category.trim() || !procurementDraft.item_description.trim() || !procurementDraft.supplier_name.trim() || !procurementDraft.procurement_method.trim() || !procurementDraft.unit.trim()) {
-      setNotice("Enter the category, item/service, supplier, procurement method, and unit");
+    if (!selectedActivity || !draft.category.trim() || !draft.item_description.trim() || !draft.supplier_name.trim() || !draft.procurement_method.trim() || !draft.unit.trim()) {
+      setNotice("Complete the category, item/service, supplier, procurement method, and unit for this line");
       return;
     }
-    if (!Number.isFinite(procurementDraft.quantity) || !Number.isFinite(procurementDraft.unit_cost) || procurementDraft.quantity <= 0 || procurementDraft.unit_cost < 0) {
-      setNotice("Quantity must be greater than zero and unit cost cannot be negative");
+    if (!Number.isFinite(draft.quantity) || !Number.isFinite(draft.unit_cost) || !Number.isFinite(draft.obligated_amount) || draft.quantity <= 0 || draft.unit_cost < 0 || draft.obligated_amount < 0) {
+      setNotice("Quantity must be greater than zero; unit cost and obligated amount cannot be negative");
       return;
     }
     try {
+      const { draftKey, ...procurementFields } = draft;
       const savedItem = await saveProcurementItem({
-        id: editingProcurementItemId ?? undefined,
-        ...procurementDraft,
+        ...procurementFields,
         program_id: program.id,
         activity_id: selectedActivity.id,
-        category: procurementDraft.category.trim(),
-        item_description: procurementDraft.item_description.trim(),
-        supplier_name: procurementDraft.supplier_name.trim(),
-        procurement_method: procurementDraft.procurement_method.trim(),
-        unit: procurementDraft.unit.trim(),
-        purchase_order_number: procurementDraft.purchase_order_number?.trim() || null,
-        delivery_date: procurementDraft.delivery_date || null,
+        category: "Other goods or services",
+        item_description: draft.item_description.trim(),
+        supplier_name: draft.supplier_name.trim(),
+        procurement_method: draft.procurement_method.trim(),
+        unit: draft.unit.trim(),
+        workflow_step_id: null,
+        obligated_amount: draft.obligated_amount,
+        purchase_order_number: draft.purchase_order_number?.trim() || null,
+        delivery_date: draft.delivery_date || null,
       });
       setProcurementItems((current) => [...current.filter((item) => item.id !== savedItem.id), savedItem]);
-      setEditingProcurementItemId(null);
-      setProcurementDraft({ category: "Food and catering", item_description: "", supplier_name: "", procurement_method: "Small Value Procurement", purchase_order_number: "", quantity: 1, unit: "lot", unit_cost: 0, delivery_status: "For procurement", delivery_date: null });
-      setNotice("Procurement item saved to the database");
+      setProcurementDrafts((current) => current.filter((entry) => entry.draftKey !== draftKey));
+      try {
+        await refreshProgramActivities();
+        setNotice(draft.id ? "Supplier line updated; activity obligations and dashboard totals refreshed" : "Supplier line added; activity obligations and dashboard totals refreshed");
+      } catch (error) {
+        setNotice(`Supplier line saved, but activity totals could not be refreshed: ${getDatabaseErrorMessage(error)}`);
+      }
     } catch (error) {
-      setNotice(`Procurement item was not saved: ${getDatabaseErrorMessage(error)}`);
+      setNotice(`Supplier line was not saved: ${getDatabaseErrorMessage(error)}`);
     }
   };
   const removeProcurementItem = async (item: ProcurementItem) => {
@@ -1948,39 +2013,63 @@ function App() {
     try {
       await deleteProcurementItem(item.id);
       setProcurementItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
-      setNotice("Procurement item deleted");
+      try {
+        await refreshProgramActivities();
+        setNotice("Supplier line deleted; activity obligations and dashboard totals refreshed");
+      } catch (error) {
+        setNotice(`Supplier line deleted, but activity totals could not be refreshed: ${getDatabaseErrorMessage(error)}`);
+      }
     } catch (error) {
-      setNotice(`Could not delete procurement item: ${getDatabaseErrorMessage(error)}`);
+      setNotice(`Could not delete supplier line: ${getDatabaseErrorMessage(error)}`);
     }
   };
+  const supplierEstimatedTotal = procurementItems.reduce((sum, item) => sum + Number(item.quantity) * Number(item.unit_cost), 0);
+  const supplierObligationTotal = procurementItems
+    .filter((item) => item.obligation_status === "Partially obligated" || item.obligation_status === "Obligated")
+    .reduce((sum, item) => sum + Number(item.obligated_amount), 0);
+  const workflowProcurementSummary = selectedActivity && procurementLoadedActivityId === selectedActivity.id ? (
+    <section className="workflow-procurement-links">
+      <strong>Supplier obligations · ₱{supplierObligationTotal.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+      {procurementItems.length ? procurementItems.map((item) => <div key={item.id}>
+        <span>{item.supplier_name}</span>
+        <b>₱{Number(item.obligated_amount).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>
+        <small>{item.item_description} · {item.obligation_status}</small>
+      </div>) : <small>No supplier obligations recorded for this activity.</small>}
+    </section>
+  ) : null;
   const procurementPanel = selectedActivity ? (
     <div className="procurement-panel">
       <div className="procurement-heading">
-        <div><p className="eyebrow">Activity procurement plan</p><h3>Suppliers, goods, and services</h3><p>Track a separate supplier for every category or purchase package.</p></div>
-        <span className="procurement-total">₱{procurementItems.reduce((sum, item) => sum + Number(item.quantity) * Number(item.unit_cost), 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+        <div><p className="eyebrow">Activity procurement plan</p><h3>Supplier and procurement lines</h3><p>Add a separate line for each supplier/package (food, transportation, lodging, supplies, and more).</p></div>
+        <div className="procurement-totals"><span>Estimated <strong>₱{supplierEstimatedTotal.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span><span>Supplier obligations <strong>₱{supplierObligationTotal.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span><span>Activity obligations <strong>₱{selectedActivity.spent.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span></div>
       </div>
       {procurementLoadedActivityId !== selectedActivity.id ? <div className="empty-state">Loading supplier records…</div> : procurementItems.length ? <div className="procurement-items">{procurementItems.map((item) => (
         <article className="procurement-item" key={item.id}>
-          <div><span className="procurement-category">{item.category}</span><h4>{item.item_description}</h4><p>{item.supplier_name} · {item.procurement_method}</p><small>{item.purchase_order_number ? `PO ${item.purchase_order_number} · ` : ""}{item.delivery_status}{item.delivery_date ? ` · ${item.delivery_date}` : ""}</small></div>
-          <div className="procurement-item-amount"><strong>₱{(Number(item.quantity) * Number(item.unit_cost)).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong><small>{Number(item.quantity).toLocaleString()} {item.unit} × ₱{Number(item.unit_cost).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</small></div>
-          {canManageFinance && <div className="finance-row-actions"><button className="button secondary" onClick={() => { setEditingProcurementItemId(item.id); setProcurementDraft({ category: item.category, item_description: item.item_description, supplier_name: item.supplier_name, procurement_method: item.procurement_method, purchase_order_number: item.purchase_order_number ?? "", quantity: Number(item.quantity), unit: item.unit, unit_cost: Number(item.unit_cost), delivery_status: item.delivery_status, delivery_date: item.delivery_date }); }}>Edit</button><button className="icon-button danger" aria-label={`Delete procurement item from ${item.supplier_name}`} onClick={() => void removeProcurementItem(item)}><Trash2 size={15} /></button></div>}
+          <div><h4>{item.item_description}</h4><p>{item.supplier_name} · {item.procurement_method}</p><small>{item.obligation_status} · {item.delivery_status}{item.purchase_order_number ? ` · PO ${item.purchase_order_number}` : ""}{item.delivery_date ? ` · ${item.delivery_date}` : ""}</small></div>
+          <div className="procurement-item-amount"><strong>Obligated ₱{Number(item.obligated_amount).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong><small>Estimated ₱{(Number(item.quantity) * Number(item.unit_cost)).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · {Number(item.quantity).toLocaleString()} {item.unit} × ₱{Number(item.unit_cost).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</small></div>
+          {canManageFinance && <div className="finance-row-actions"><button className="button secondary" onClick={() => setProcurementDrafts((current) => [...current.filter((draft) => draft.id !== item.id), { ...item, draftKey: crypto.randomUUID() }])}>Edit</button><button className="icon-button danger" aria-label={`Delete procurement item from ${item.supplier_name}`} onClick={() => void removeProcurementItem(item)}><Trash2 size={15} /></button></div>}
         </article>
       ))}</div> : <div className="empty-state">No procurement suppliers recorded for this activity.</div>}
-      {canManageFinance && <section className="procurement-form">
-        <h4>Add goods, services, or supplier</h4>
-        <div className="procurement-form-grid">
-          <label>Category<input list="procurement-categories" value={procurementDraft.category} onChange={(event) => setProcurementDraft({ ...procurementDraft, category: event.target.value })} /><datalist id="procurement-categories"><option value="Food and catering" /><option value="Venue and lodging" /><option value="Transport and freight" /><option value="Training and professional services" /><option value="Farm inputs and materials" /><option value="Equipment and supplies" /><option value="Other goods or services" /></datalist></label>
-          <label>Item / service<input value={procurementDraft.item_description} onChange={(event) => setProcurementDraft({ ...procurementDraft, item_description: event.target.value })} placeholder="Describe the goods or service" /></label>
-          <label>Supplier / service provider<input value={procurementDraft.supplier_name} onChange={(event) => setProcurementDraft({ ...procurementDraft, supplier_name: event.target.value })} placeholder="Registered supplier name" /></label>
-          <label>Procurement method<input list="procurement-methods" value={procurementDraft.procurement_method} onChange={(event) => setProcurementDraft({ ...procurementDraft, procurement_method: event.target.value })} /><datalist id="procurement-methods"><option value="Competitive bidding" /><option value="Small Value Procurement" /><option value="Negotiated procurement" /><option value="Direct contracting" /><option value="Agency-to-agency" /><option value="Other method" /></datalist></label>
-          <label>PO / contract reference<input value={procurementDraft.purchase_order_number ?? ""} onChange={(event) => setProcurementDraft({ ...procurementDraft, purchase_order_number: event.target.value })} placeholder="Optional reference" /></label>
-          <label>Quantity<input type="number" min="0.001" step="0.001" value={procurementDraft.quantity} onChange={(event) => setProcurementDraft({ ...procurementDraft, quantity: Number(event.target.value) })} /></label>
-          <label>Unit<input value={procurementDraft.unit} onChange={(event) => setProcurementDraft({ ...procurementDraft, unit: event.target.value })} placeholder="lot, pax, unit, day" /></label>
-          <label>Unit cost (₱)<input type="number" min="0" step="0.01" value={procurementDraft.unit_cost} onChange={(event) => setProcurementDraft({ ...procurementDraft, unit_cost: Number(event.target.value) })} /></label>
-          <label>Delivery status<select value={procurementDraft.delivery_status} onChange={(event) => setProcurementDraft({ ...procurementDraft, delivery_status: event.target.value })}><option>For procurement</option><option>Purchase order issued</option><option>Partially delivered</option><option>Delivered</option><option>Inspected and accepted</option><option>Cancelled</option></select></label>
-          <label>Delivery date<input type="date" value={procurementDraft.delivery_date ?? ""} onChange={(event) => setProcurementDraft({ ...procurementDraft, delivery_date: event.target.value || null })} /></label>
-        </div>
-        <div className="finance-form-actions">{editingProcurementItemId && <button className="button secondary" onClick={() => { setEditingProcurementItemId(null); setProcurementDraft({ category: "Food and catering", item_description: "", supplier_name: "", procurement_method: "Small Value Procurement", purchase_order_number: "", quantity: 1, unit: "lot", unit_cost: 0, delivery_status: "For procurement", delivery_date: null }); }}>Cancel edit</button>}<button className="button primary" onClick={() => void addProcurementItem()}><Save size={14} /> {editingProcurementItemId ? "Update supplier line" : "Save supplier line online"}</button></div>
+      {canManageFinance && procurementLoadedActivityId === selectedActivity.id && <section className="procurement-form">
+        <div className="procurement-form-heading"><div><h4>Supplier line entry</h4><p>Prepare multiple suppliers and save each line independently.</p></div><button type="button" className="button secondary" onClick={() => setProcurementDrafts((current) => [...current, createProcurementDraft()])}><Plus size={14} /> Add supplier line</button></div>
+        <datalist id="procurement-methods"><option value="Competitive bidding" /><option value="Small Value Procurement" /><option value="Negotiated procurement" /><option value="Direct contracting" /><option value="Agency-to-agency" /><option value="Other method" /></datalist>
+        {procurementDrafts.map((draft, index) => <div className="procurement-draft-line" key={draft.draftKey}>
+          <h5>{draft.id ? "Edit supplier line" : `New supplier line ${index + 1}`}</h5>
+          <div className="procurement-form-grid">
+            <label>Item / service<input value={draft.item_description} onChange={(event) => updateProcurementDraft(draft.draftKey, { item_description: event.target.value })} placeholder="Describe the goods or service" /></label>
+            <label>Supplier / service provider<input value={draft.supplier_name} onChange={(event) => updateProcurementDraft(draft.draftKey, { supplier_name: event.target.value })} placeholder="Registered supplier name" /></label>
+            <label>Procurement method<input list="procurement-methods" value={draft.procurement_method} onChange={(event) => updateProcurementDraft(draft.draftKey, { procurement_method: event.target.value })} /></label>
+            <label>PO / contract reference<input value={draft.purchase_order_number ?? ""} onChange={(event) => updateProcurementDraft(draft.draftKey, { purchase_order_number: event.target.value })} placeholder="Optional reference" /></label>
+            <label>Quantity<input type="number" min="0.001" step="0.001" value={draft.quantity} onChange={(event) => updateProcurementDraft(draft.draftKey, { quantity: Number(event.target.value) })} /></label>
+            <label>Unit<input value={draft.unit} onChange={(event) => updateProcurementDraft(draft.draftKey, { unit: event.target.value })} placeholder="lot, pax, unit, day" /></label>
+            <label>Unit cost (₱)<input type="number" min="0" step="0.01" value={draft.unit_cost} onChange={(event) => updateProcurementDraft(draft.draftKey, { unit_cost: Number(event.target.value) })} /></label>
+            <label>Obligation status<select value={draft.obligation_status} onChange={(event) => updateProcurementDraft(draft.draftKey, { obligation_status: event.target.value as ProcurementItem["obligation_status"] })}><option>Not obligated</option><option>Partially obligated</option><option>Obligated</option><option>Cancelled</option></select></label>
+            <label>Obligated amount (₱)<input type="number" min="0" step="0.01" value={draft.obligated_amount} disabled={draft.obligation_status === "Not obligated" || draft.obligation_status === "Cancelled"} onChange={(event) => updateProcurementDraft(draft.draftKey, { obligated_amount: Number(event.target.value) })} /></label>
+            <label>Delivery status<select value={draft.delivery_status} onChange={(event) => updateProcurementDraft(draft.draftKey, { delivery_status: event.target.value })}><option>For procurement</option><option>Purchase order issued</option><option>Partially delivered</option><option>Delivered</option><option>Inspected and accepted</option><option>Cancelled</option></select></label>
+            <label>Delivery date<input type="date" value={draft.delivery_date ?? ""} onChange={(event) => updateProcurementDraft(draft.draftKey, { delivery_date: event.target.value || null })} /></label>
+          </div>
+          <div className="finance-form-actions"><button type="button" className="button secondary" onClick={() => setProcurementDrafts((current) => current.filter((entry) => entry.draftKey !== draft.draftKey))}>{draft.id ? "Cancel edit" : "Remove line"}</button><button type="button" className="button primary" onClick={() => void saveProcurementDraft(draft)}><Save size={14} /> {draft.id ? "Update supplier line" : "Save supplier line"}</button></div>
+        </div>)}
       </section>}
     </div>
   ) : null;
@@ -2080,29 +2169,35 @@ function App() {
     setBeneficiaryEditingId(record?.id ?? null);
     setBeneficiaryForm({
       program_id: record?.program_id ?? (systemRole === "superadmin" && beneficiaryProgramFilter !== "all" ? beneficiaryProgramFilter : program.id),
-      activity_id: record?.activity_id ?? "",
+      activity_ids: record?.activity_ids ?? [],
       beneficiary_name: record?.beneficiary_name ?? "",
-      beneficiary_code: record?.beneficiary_code ?? "",
+      beneficiary_acronym: record?.beneficiary_acronym ?? "",
+      fca_category: record?.fca_category ?? "",
+      membership_count: record?.membership_count?.toString() ?? "",
+      contact_person: record?.contact_person ?? "",
+      contact_number: record?.contact_number ?? "",
+      additional_details: record?.additional_details ?? "",
+      province: record?.province ?? "",
       municipality: record?.municipality ?? "",
       barangay: record?.barangay ?? "",
-      assistance_received: record?.assistance_received ?? "",
+      other_assistance_interventions: record?.other_assistance_interventions ?? "",
     });
     setBeneficiaryDialogOpen(true);
   };
   const saveBeneficiaryRecord = async () => {
     const name = beneficiaryForm.beneficiary_name.trim();
-    const code = beneficiaryForm.beneficiary_code.trim();
-    const assistance = beneficiaryForm.assistance_received.trim();
+    const acronym = beneficiaryForm.beneficiary_acronym.trim();
+    const otherAssistance = beneficiaryForm.other_assistance_interventions.trim();
     if (!beneficiaryForm.program_id) {
       setNotice("Select a program for this beneficiary record");
       return;
     }
-    if (!name && !code) {
-      setNotice("Enter a beneficiary name or beneficiary code");
+    if (!name && !acronym) {
+      setNotice("Enter an FCA name or acronym");
       return;
     }
-    if (!assistance) {
-      setNotice("Assistance received is required");
+    if (beneficiaryForm.membership_count && (!Number.isInteger(Number(beneficiaryForm.membership_count)) || Number(beneficiaryForm.membership_count) < 0)) {
+      setNotice("Enter a whole-number FCA membership count of zero or more");
       return;
     }
 
@@ -2111,12 +2206,18 @@ function App() {
       const savedRecord = await saveBeneficiary({
         id: beneficiaryEditingId ?? undefined,
         program_id: beneficiaryForm.program_id,
-        activity_id: beneficiaryForm.activity_id || null,
+        activity_ids: beneficiaryForm.activity_ids,
         beneficiary_name: name || null,
-        beneficiary_code: code || null,
+        beneficiary_acronym: acronym || null,
+        fca_category: beneficiaryForm.fca_category.trim() || null,
+        membership_count: beneficiaryForm.membership_count ? Number(beneficiaryForm.membership_count) : null,
+        contact_person: beneficiaryForm.contact_person.trim() || null,
+        contact_number: beneficiaryForm.contact_number.trim() || null,
+        additional_details: beneficiaryForm.additional_details.trim() || null,
+        province: beneficiaryForm.province.trim() || null,
         municipality: beneficiaryForm.municipality.trim() || null,
         barangay: beneficiaryForm.barangay.trim() || null,
-        assistance_received: assistance,
+        other_assistance_interventions: otherAssistance || null,
       });
       setBeneficiaryRecords((current) => beneficiaryEditingId
         ? current.map((record) => record.id === savedRecord.id ? savedRecord : record)
@@ -2125,7 +2226,7 @@ function App() {
       setBeneficiaryEditingId(null);
       setNotice(beneficiaryEditingId ? "Beneficiary record updated" : "Beneficiary record added");
     } catch (error) {
-      setNotice(`Beneficiary record was not saved: ${getDatabaseErrorMessage(error)}`);
+      setNotice(`Beneficiary record could not be fully saved: ${getDatabaseErrorMessage(error)}`);
     } finally {
       setBeneficiarySaving(false);
     }
@@ -2206,11 +2307,8 @@ function App() {
               >
                 <LayoutDashboard size={14} /> Dashboard
               </button>
-              <button
-                className={activeTab === "calendar" ? "top-nav-item active" : "top-nav-item"}
-                onClick={() => navigateTo("calendar", "Activity calendar opened")}
-              >
-                <CalendarDays size={14} /> Calendar
+              <button className={activeTab === "finance" ? "top-nav-item active" : "top-nav-item"} onClick={() => navigateTo("finance", "Financial management opened")}>
+                <CircleDollarSign size={14} /> Finance
               </button>
               <button
                 className={
@@ -2228,8 +2326,11 @@ function App() {
               >
                 <Users size={14} /> Beneficiaries
               </button>
-              <button className={activeTab === "finance" ? "top-nav-item active" : "top-nav-item"} onClick={() => navigateTo("finance", "Financial management opened")}>
-                <CircleDollarSign size={14} /> Finance
+              <button
+                className={activeTab === "calendar" ? "top-nav-item active" : "top-nav-item"}
+                onClick={() => navigateTo("calendar", "Activity calendar opened")}
+              >
+                <CalendarDays size={14} /> Calendar
               </button>
               <button
                 className={
@@ -2370,7 +2471,7 @@ function App() {
                 <div><p className="eyebrow">{program.acronym} · Annual financial records{systemRole === "superadmin" ? " · Superadmin read-only view" : ""}</p><h2>{financeSheet === "APP" ? "Annual Procurement Plan (APP)" : financeSheet === "WFP" ? "Work and Financial Plan (WFP)" : "Project Procurement Management Plan (PPMP)"}</h2><p>View {financeSheet} sheets by fiscal year. Financial editing is restricted to this program's administrator.</p></div>
                 <div className="finance-toolbar-actions">
                   {systemRole === "superadmin" && <label className="fiscal-year-select finance-program-select">Program<select aria-label="Select a program to view its financial records" value={program.id} onChange={(event) => { if (event.target.value !== program.id) selectProgram(event.target.value); }}><option value="" disabled>Select a program</option>{programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}</select></label>}
-                  <label className="fiscal-year-select">Fiscal year<select value={selectedFiscalYear} onChange={(event) => setSelectedFiscalYear(Number(event.target.value))}>{Array.from(new Set([...annualAllocations.map((row) => row.fiscal_year), ...procurementPlanYears, selectedFiscalYear, new Date().getFullYear()])).sort((a, b) => b - a).map((year) => <option key={year} value={year}>FY {year}</option>)}</select></label>
+                  <label className="fiscal-year-select">Fiscal year<select value={selectedFiscalYear} onChange={(event) => setSelectedFiscalYear(Number(event.target.value))}>{Array.from(new Set([...annualAllocations.map((row) => row.fiscal_year), ...procurementPlanYears, selectedFiscalYear, currentFiscalYear - 1, currentFiscalYear, currentFiscalYear + 1])).sort((a, b) => b - a).map((year) => <option key={year} value={year}>FY {year}</option>)}</select></label>
                   <button type="button" className="button secondary" onClick={() => setShowAllocationEditor(true)}><Settings size={15} /> {canManageFinance ? "Edit annual financial details" : "View annual financial details"}</button>
                 </div>
               </div>
@@ -2385,39 +2486,30 @@ function App() {
                   disbursements: total.disbursements + Number(row.disbursements),
                 }), { appropriation: 0, allotment: 0, disbursements: 0 });
                 const peso = (amount: number) => `₱${amount.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                const visibleAppPlanColumnWidths = appPlanColumnWidths.slice(0, canManageFinance ? 13 : 12);
+                const appPlanColumnWidthTotal = visibleAppPlanColumnWidths.reduce((total, width) => total + width, 0);
                 const renderAppPlanRow = (row: ProcurementPlanItem | null) => {
                   const key = procurementPlanRowKey(row);
                   const draft = procurementPlanDrafts[key] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft());
                   const saving = procurementPlanSavingId === key;
-                  const textCell = (field: Exclude<keyof AppPlanRowDraft, "early_procurement_activity">, label: string) => {
-                    if (!canManageFinance) return <span>{draft[field] || "—"}</span>;
-                    const inputProps = {
-                      className: `app-spreadsheet-input ${field === "project_description" || field === "bid_evaluation_criteria" || field === "remarks" ? "app-spreadsheet-multiline" : ""}`,
-                      "aria-label": `${label}${row ? ` for ${draft.project_title}` : ""}`,
-                      value: draft[field],
-                      disabled: saving,
-                      onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => updateProcurementPlanDraft(row, field, event.target.value),
-                    };
-                    return field === "project_description" || field === "bid_evaluation_criteria" || field === "remarks"
-                      ? <textarea {...inputProps} rows={3} />
-                      : <input {...inputProps} />;
-                  };
-                  const monthCell = (field: "procurement_start" | "procurement_end", label: string) => canManageFinance
-                    ? <input className="app-spreadsheet-input app-month-input" type="month" aria-label={`${label}${row ? ` for ${draft.project_title}` : ""}`} value={draft[field]} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, field, event.target.value)} />
-                    : <span>{draft[field] ? `${draft[field].slice(5, 7)}/${draft[field].slice(0, 4)}` : "—"}</span>;
+                  const cell = (field: keyof AppPlanRowDraft, label: string, rawValue: string, displayValue = rawValue || "—") => <td title={`${label}: ${displayValue}`}>
+                    <button type="button" className="finance-cell-trigger" disabled={saving} aria-label={`View ${label}: ${displayValue}`} onClick={() => setFinanceCellEditor({ row, field, label })}>{displayValue}</button>
+                  </td>;
+                  const startMonth = draft.procurement_start;
+                  const endMonth = draft.procurement_end;
                   return <tr key={key}>
-                    <td>{textCell("project_title", "Project title")}</td>
-                    <td>{textCell("implementing_unit", "End-user or implementing unit")}</td>
-                    <td>{textCell("project_description", "General project description")}</td>
-                    <td>{textCell("procurement_mode", "Mode of procurement")}</td>
-                    <td>{canManageFinance ? <select className="app-spreadsheet-input" aria-label={`Early procurement activity for ${draft.project_title || "new project"}`} value={draft.early_procurement_activity ? "yes" : "no"} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, "early_procurement_activity", event.target.value === "yes")}><option value="yes">Yes</option><option value="no">No</option></select> : <span>{draft.early_procurement_activity ? "Yes" : "No"}</span>}</td>
-                    <td>{textCell("bid_evaluation_criteria", "Bid evaluation criteria")}</td>
-                    <td>{monthCell("procurement_start", "Start of procurement activity")}</td>
-                    <td>{monthCell("procurement_end", "End of procurement activity")}</td>
-                    <td>{textCell("source_of_fund", "Source of fund")}</td>
-                    <td>{canManageFinance ? <input className="app-spreadsheet-input app-budget-input" type="number" min="0" step="0.01" aria-label={`Estimated budget for ${draft.project_title || "new project"}`} value={draft.estimated_budget} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, "estimated_budget", event.target.value)} /> : <span>{peso(Number(draft.estimated_budget) || 0)}</span>}</td>
-                    <td>{textCell("procurement_strategy", "Procurement strategy or tools")}</td>
-                    <td>{textCell("remarks", "Remarks")}</td>
+                    {cell("project_title", "Project title", draft.project_title)}
+                    {cell("implementing_unit", "End-user or implementing unit", draft.implementing_unit)}
+                    {cell("project_description", "General project description", draft.project_description)}
+                    {cell("procurement_mode", "Mode of procurement", draft.procurement_mode)}
+                    {cell("early_procurement_activity", "Early procurement activity", draft.early_procurement_activity ? "true" : "false", draft.early_procurement_activity ? "Yes" : "No")}
+                    {cell("bid_evaluation_criteria", "Bid evaluation criteria", draft.bid_evaluation_criteria)}
+                    {cell("procurement_start", "Start of procurement activity", startMonth, startMonth ? `${startMonth.slice(5, 7)}/${startMonth.slice(0, 4)}` : "—")}
+                    {cell("procurement_end", "End of procurement activity", endMonth, endMonth ? `${endMonth.slice(5, 7)}/${endMonth.slice(0, 4)}` : "—")}
+                    {cell("source_of_fund", "Source of fund", draft.source_of_fund)}
+                    {cell("estimated_budget", "Estimated budget / approved contract budget", draft.estimated_budget, peso(Number(draft.estimated_budget) || 0))}
+                    {cell("procurement_strategy", "Procurement strategy or tools", draft.procurement_strategy)}
+                    {cell("remarks", "Remarks", draft.remarks)}
                     {canManageFinance && <td><div className="finance-row-actions"><button type="button" className="button primary spreadsheet-save" disabled={saving || !procurementPlanDrafts[key]} onClick={() => void saveProcurementPlanRow(row)}><Save size={13} /> {saving ? "Saving" : "Save"}</button>{procurementPlanDrafts[key] && <button type="button" className="button secondary spreadsheet-save" disabled={saving} onClick={() => setProcurementPlanDrafts((current) => { const next = { ...current }; delete next[key]; return next; })}>Cancel</button>}{row && <button type="button" className="icon-button danger" aria-label={`Delete APP project ${row.project_title}`} onClick={() => void deleteProcurementPlanRow(row)}><Trash2 size={15} /></button>}</div></td>}
                   </tr>;
                 };
@@ -2441,7 +2533,7 @@ function App() {
                     </section>
                     <section className="finance-card app-plan-card">
                       <div className="section-title app-plan-section-heading"><div><h3>APP project details</h3><p>{procurementPlanItems.length} procurement project{procurementPlanItems.length === 1 ? "" : "s"} · enter dates as month and year. Saving a project also creates or updates its Activity and Calendar entry.</p></div><div className="app-plan-transfer-actions"><button type="button" className="button secondary" onClick={exportAppPlanCsv} disabled={!procurementPlanItems.length}><Download size={14} /> Export CSV</button>{canManageFinance && <><button type="button" className="button secondary" onClick={() => appPlanImportInputRef.current?.click()} disabled={procurementPlanImporting}><Upload size={14} /> {procurementPlanImporting ? "Importing…" : "Import CSV"}</button><input ref={appPlanImportInputRef} className="visually-hidden" type="file" accept=".csv,text/csv" aria-label="Import APP projects from CSV" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void importAppPlanCsv(file); event.currentTarget.value = ""; }} /></>}</div></div>
-                      {procurementPlanLoading ? <div className="empty-state">Loading FY {selectedFiscalYear} APP…</div> : procurementPlanItems.length || canManageFinance ? <div className="finance-table-wrap app-plan-table-wrap"><table className="finance-table app-plan-table"><colgroup>{appPlanColumnWidths.slice(0, canManageFinance ? 13 : 12).map((width, index) => <col key={index} style={{ width }} />)}</colgroup><thead><tr><th className="app-plan-group-header" colSpan={6} title="Procurement project details">Project details</th><th className="app-plan-group-header app-plan-timeline-header" colSpan={2} title="Projected timeline (month and year)">Timeline (MM/YYYY)</th><th className="app-plan-group-header app-plan-funding-header" colSpan={2} title="Funding details">Funding</th><th className="app-plan-group-header app-plan-strategy-header" rowSpan={2}>{appPlanResizeHandle(10)}<span title="Procurement strategy or tools">Strategy / tools</span></th><th className="app-plan-group-header app-plan-remarks-header" rowSpan={2}>{appPlanResizeHandle(11)}<span title="Remarks and other relevant descriptions of the procurement project, if applicable">Remarks</span></th>{canManageFinance && <th className="app-plan-group-header app-plan-actions-header" rowSpan={2}>{appPlanResizeHandle(12)}Actions</th>}</tr><tr>{["Project title", "End-user or implementing unit", "General description of the project", "Mode of procurement", "Early procurement activity? (Yes/No)", "Criteria for bid evaluation (including sustainability and domestic preference)", "Start of procurement activity", "End of procurement activity", "Source of fund", "Estimated budget / approved budget for the contract (PhP)"].map((heading, index) => {
+                      {procurementPlanLoading ? <div className="empty-state">Loading FY {selectedFiscalYear} APP…</div> : procurementPlanItems.length || canManageFinance ? <div className="finance-table-wrap app-plan-table-wrap"><table className="finance-table app-plan-table"><colgroup>{visibleAppPlanColumnWidths.map((width, index) => <col key={index} style={{ width: `${width / appPlanColumnWidthTotal * 100}%` }} />)}</colgroup><thead><tr><th className="app-plan-group-header" colSpan={6} title="Procurement project details">Project details</th><th className="app-plan-group-header app-plan-timeline-header" colSpan={2} title="Projected timeline (month and year)">Timeline (MM/YYYY)</th><th className="app-plan-group-header app-plan-funding-header" colSpan={2} title="Funding details">Funding</th><th className="app-plan-group-header app-plan-strategy-header" rowSpan={2}>{appPlanResizeHandle(10)}<span title="Procurement strategy or tools">Strategy / tools</span></th><th className="app-plan-group-header app-plan-remarks-header" rowSpan={2}>{appPlanResizeHandle(11)}<span title="Remarks and other relevant descriptions of the procurement project, if applicable">Remarks</span></th>{canManageFinance && <th className="app-plan-group-header app-plan-actions-header" rowSpan={2}>{appPlanResizeHandle(12)}Actions</th>}</tr><tr>{["Project title", "End-user or implementing unit", "General description of the project", "Mode of procurement", "Early procurement activity? (Yes/No)", "Criteria for bid evaluation (including sustainability and domestic preference)", "Start of procurement activity", "End of procurement activity", "Source of fund", "Estimated budget / approved budget for the contract (PhP)"].map((heading, index) => {
                         const shortHeadings = ["Project title", "End user / unit", "Project description", "Procurement mode", "Early procurement?", "Evaluation criteria", "Start", "End", "Fund source", "Est. budget (PHP)"];
                         return <th className="app-plan-column-header" key={heading} title={heading} aria-label={heading}>{appPlanResizeHandle(index)}<span>{shortHeadings[index]}</span></th>;
                       })}</tr></thead><tbody>{procurementPlanItems.map((row) => renderAppPlanRow(row))}{canManageFinance && renderAppPlanRow(null)}</tbody><tfoot><tr><th colSpan={9}>APP estimated budget total</th><td>{peso(procurementPlanItems.reduce((sum, row) => sum + Number(row.estimated_budget), 0))}</td><td colSpan={canManageFinance ? 3 : 2}></td></tr></tfoot></table></div> : <div className="empty-state">No APP projects have been entered for FY {selectedFiscalYear}.</div>}
@@ -2493,6 +2585,44 @@ function App() {
                   </section>
                 </dialog>
               </div>}
+              {financeCellEditor && (() => {
+                const { row, field, label } = financeCellEditor;
+                const key = procurementPlanRowKey(row);
+                const draft = procurementPlanDrafts[key] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft());
+                const rawValue = draft[field];
+                const rawText = typeof rawValue === "string" ? rawValue : "";
+                const value = typeof rawValue === "boolean" ? rawValue ? "Yes" : "No" : rawText;
+                const displayValue = field === "estimated_budget"
+                  ? formatDashboardCurrency(Number(rawText) || 0)
+                  : field === "procurement_start" || field === "procurement_end"
+                    ? rawText ? `${rawText.slice(5, 7)}/${rawText.slice(0, 4)}` : "—"
+                    : value || "—";
+                const isLongText = field === "project_description" || field === "bid_evaluation_criteria" || field === "procurement_strategy" || field === "remarks";
+                const saving = procurementPlanSavingId === key;
+                return <div className="dialog-overlay finance-editor-overlay" onClick={(event) => { if (event.target === event.currentTarget) setFinanceCellEditor(null); }}>
+                  <dialog open className="activity-dialog finance-cell-dialog" aria-labelledby="finance-cell-dialog-title">
+                    <div className="detail-heading">
+                      <div><p className="eyebrow">FY {selectedFiscalYear} · {row?.project_title || "New APP project"}</p><h2 id="finance-cell-dialog-title">{label}</h2><p className="detail-subtitle">{canManageFinance ? "View and edit this cell. Save applies all pending changes for this row." : "Read-only financial record"}</p></div>
+                      <button type="button" className="icon-button" aria-label="Close cell details" onClick={() => setFinanceCellEditor(null)}><X size={17} /></button>
+                    </div>
+                    {canManageFinance
+                      ? field === "early_procurement_activity"
+                        ? <label className="finance-cell-field">Value<select value={rawValue === true ? "yes" : "no"} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, field, event.target.value === "yes")}><option value="yes">Yes</option><option value="no">No</option></select></label>
+                        : field === "procurement_start" || field === "procurement_end"
+                          ? <label className="finance-cell-field">{label}<input type="month" value={rawText} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, field, event.target.value)} /></label>
+                          : field === "estimated_budget"
+                            ? <label className="finance-cell-field">{label}<input type="number" min="0" step="0.01" value={rawText} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, field, event.target.value)} /></label>
+                            : <label className="finance-cell-field">{label}{isLongText
+                              ? <textarea rows={7} value={rawText} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, field, event.target.value)} />
+                              : <input value={rawText} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, field, event.target.value)} />}</label>
+                      : <div className="finance-cell-value">{displayValue}</div>}
+                    {canManageFinance && <div className="finance-cell-actions">
+                      <button type="button" className="button secondary" disabled={saving} onClick={() => { setProcurementPlanDrafts((current) => { const next = { ...current }; delete next[key]; return next; }); setFinanceCellEditor(null); }}>Cancel changes</button>
+                      <button type="button" className="button primary" disabled={saving || !procurementPlanDrafts[key]} onClick={() => void saveProcurementPlanRow(row).then((didSave) => { if (didSave) setFinanceCellEditor(null); })}><Save size={14} /> {saving ? "Saving…" : "Save row"}</button>
+                    </div>}
+                  </dialog>
+                </div>;
+              })()}
             </section>
           ) : (
           <div className={`builder-layout ${activeTab === "activities" ? "activities-layout" : ""} ${activeTab === "calendar" ? "calendar-builder-layout" : ""} ${activeTab === "beneficiaries" ? "beneficiaries-layout" : ""}`}>
@@ -2805,60 +2935,75 @@ function App() {
                   <div className="beneficiary-toolbar">
                     <div>
                       <p className="eyebrow">{systemRole === "superadmin" ? "System register" : `${program.acronym} register`}</p>
-                      <h2>Beneficiaries</h2>
-                      <p>Store only the identifier and program delivery details needed for beneficiary tracking.</p>
+                      <h2>Beneficiary FCAs</h2>
+                      <p>Maintain Farmers’ Cooperatives and Associations, their locations, membership, and the interventions provided. Only this program's administrator can add, edit, or delete records.</p>
                     </div>
                     <div className="beneficiary-toolbar-actions">
                       <label className="activity-search"><Search size={16} /><input value={beneficiarySearch} onChange={(event) => setBeneficiarySearch(event.target.value)} placeholder="Search beneficiaries" aria-label="Search beneficiaries" /></label>
                       {systemRole === "superadmin" && <label className="beneficiary-program-filter">Program<select value={beneficiaryProgramFilter} onChange={(event) => setBeneficiaryProgramFilter(event.target.value)}><option value="all">All programs</option>{programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}</select></label>}
-                      {canEdit && <button type="button" className="button primary" onClick={() => openBeneficiaryForm()}><Plus size={15} /> Add beneficiary</button>}
+                      {canEditBeneficiaries && <button type="button" className="button primary" onClick={() => openBeneficiaryForm()}><Plus size={15} /> Add beneficiary</button>}
                     </div>
                   </div>
                   <div className="beneficiary-summary">
                     <div><small>Records</small><strong>{visibleBeneficiaryRecords.length}</strong></div>
-                    <div><small>Linked to activity</small><strong>{visibleBeneficiaryRecords.filter((record) => record.activity_id).length}</strong></div>
+                    <div><small>Linked to interventions</small><strong>{visibleBeneficiaryRecords.filter((record) => record.activity_ids.length > 0).length}</strong></div>
                     <div><small>Showing</small><strong>{filteredBeneficiaryRecords.length}</strong></div>
                   </div>
                   <div className="beneficiary-table-wrap">
                     <table className="beneficiary-table">
-                      <thead><tr><th>Beneficiary</th><th>Program</th><th>Activity</th><th>Municipality / Barangay</th><th>Assistance received</th>{canEdit && <th>Actions</th>}</tr></thead>
+                      <thead><tr><th>Beneficiary FCA</th><th>Program</th><th>FCA category</th><th>Members</th><th>Contact person / number</th><th>Province / Municipality / Barangay</th><th>Activities / interventions</th><th>Other assistance / interventions received</th><th>Additional details</th>{canEditBeneficiaries && <th>Actions</th>}</tr></thead>
                       <tbody>
                         {beneficiaryTableLoading
-                          ? <tr><td colSpan={canEdit ? 6 : 5} className="beneficiary-empty">Loading beneficiary records…</td></tr>
+                          ? <tr><td colSpan={canEditBeneficiaries ? 10 : 9} className="beneficiary-empty">Loading beneficiary FCAs…</td></tr>
                           : filteredBeneficiaryRecords.map((record) => {
                             const recordProgram = programOptions.find((option) => option.id === record.program_id);
-                            const recordActivity = (activitiesByProgram[record.program_id] ?? []).find((activity) => activity.id === record.activity_id);
+                            const recordActivities = (activitiesByProgram[record.program_id] ?? [])
+                              .filter((activity) => record.activity_ids.includes(activity.id));
                             return <tr key={record.id}>
-                              <td><strong>{record.beneficiary_name || record.beneficiary_code || "Unnamed beneficiary"}</strong>{record.beneficiary_name && record.beneficiary_code && <small>{record.beneficiary_code}</small>}</td>
+                              <td><strong>{record.beneficiary_name || record.beneficiary_acronym || "Unnamed FCA"}</strong>{record.beneficiary_name && record.beneficiary_acronym && <small>{record.beneficiary_acronym}</small>}</td>
                               <td>{recordProgram ? `${recordProgram.acronym} — ${recordProgram.title}` : "Program"}</td>
-                              <td>{recordActivity?.name ?? (record.activity_id ? "Activity unavailable" : "Not linked")}</td>
-                              <td>{[record.municipality, record.barangay].filter(Boolean).join(" · ") || "Not specified"}</td>
-                              <td>{record.assistance_received}</td>
-                              {canEdit && <td><div className="beneficiary-row-actions"><button type="button" className="button secondary" onClick={() => openBeneficiaryForm(record)}>Edit</button><button type="button" className="button danger-outline" onClick={() => setBeneficiaryToDelete(record)}>Delete</button></div></td>}
+                              <td>{record.fca_category || "Not specified"}</td>
+                              <td>{record.membership_count ?? "Not specified"}</td>
+                              <td>{[record.contact_person, record.contact_number].filter(Boolean).join(" · ") || "Not specified"}</td>
+                              <td>{[record.province, record.municipality, record.barangay].filter(Boolean).join(" · ") || "Not specified"}</td>
+                              <td>{recordActivities.length ? recordActivities.map((activity) => activity.name).join(", ") : "Not linked"}</td>
+                              <td>{record.other_assistance_interventions || "—"}</td>
+                              <td>{record.additional_details || "—"}</td>
+                              {canEditBeneficiaries && <td><div className="beneficiary-row-actions"><button type="button" className="button secondary" onClick={() => openBeneficiaryForm(record)}>Edit</button><button type="button" className="button danger-outline" onClick={() => setBeneficiaryToDelete(record)}>Delete</button></div></td>}
                             </tr>;
                           })}
-                        {!beneficiaryTableLoading && filteredBeneficiaryRecords.length === 0 && <tr><td colSpan={canEdit ? 6 : 5} className="beneficiary-empty">{beneficiarySearch.trim() ? "No records match your search." : "No beneficiary records have been added yet."}</td></tr>}
+                        {!beneficiaryTableLoading && filteredBeneficiaryRecords.length === 0 && <tr><td colSpan={canEditBeneficiaries ? 10 : 9} className="beneficiary-empty">{beneficiarySearch.trim() ? "No records match your search." : "No beneficiary FCAs have been added yet."}</td></tr>}
                       </tbody>
                     </table>
                   </div>
-                  {beneficiaryDialogOpen && <div className="dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget && !beneficiarySaving) setBeneficiaryDialogOpen(false); }}>
+                  {beneficiaryDialogOpen && canEditBeneficiaries && <div className="dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget && !beneficiarySaving) setBeneficiaryDialogOpen(false); }}>
                     <dialog open className="activity-dialog beneficiary-dialog">
-                      <div className="detail-heading"><div><p className="eyebrow">Beneficiary register</p><h2>{beneficiaryEditingId ? "Edit beneficiary" : "Add beneficiary"}</h2><p className="detail-subtitle">A name or beneficiary code is required. Avoid entering government ID numbers or contact details.</p></div><button type="button" className="icon-button" aria-label="Close beneficiary form" disabled={beneficiarySaving} onClick={() => setBeneficiaryDialogOpen(false)}><X size={17} /></button></div>
+                      <div className="detail-heading"><div><p className="eyebrow">Beneficiary FCA register</p><h2>{beneficiaryEditingId ? "Edit beneficiary FCA" : "Add beneficiary FCA"}</h2><p className="detail-subtitle">Provide the FCA identity, membership and contact information, location, and interventions provided.</p></div><button type="button" className="icon-button" aria-label="Close beneficiary FCA form" disabled={beneficiarySaving} onClick={() => setBeneficiaryDialogOpen(false)}><X size={17} /></button></div>
                       <div className="beneficiary-form-grid">
-                        {systemRole === "superadmin" && <label>Program<select value={beneficiaryForm.program_id} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, program_id: event.target.value, activity_id: "" }))}><option value="">Select program</option>{programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}</select></label>}
-                        <label>Beneficiary name<input value={beneficiaryForm.beneficiary_name} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, beneficiary_name: event.target.value }))} autoComplete="off" /></label>
-                        <label>Beneficiary code<input value={beneficiaryForm.beneficiary_code} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, beneficiary_code: event.target.value }))} autoComplete="off" /></label>
-                        <label>Activity (optional)<select value={beneficiaryForm.activity_id} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, activity_id: event.target.value }))}><option value="">Not linked</option>{(activitiesByProgram[beneficiaryForm.program_id] ?? (beneficiaryForm.program_id === program.id ? activities : [])).map((activity) => <option key={activity.id} value={activity.id}>{activity.name}</option>)}</select></label>
+                        <label>FCA name<input value={beneficiaryForm.beneficiary_name} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, beneficiary_name: event.target.value }))} autoComplete="organization" /></label>
+                        <label>FCA acronym<input value={beneficiaryForm.beneficiary_acronym} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, beneficiary_acronym: event.target.value }))} autoComplete="off" /></label>
+                        <label>FCA category / type<input value={beneficiaryForm.fca_category} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, fca_category: event.target.value }))} placeholder="Farmers association, cooperative, etc." /></label>
+                        <label>Number of members<input type="number" min="0" step="1" value={beneficiaryForm.membership_count} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, membership_count: event.target.value }))} /></label>
+                        <label>Contact person<input value={beneficiaryForm.contact_person} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, contact_person: event.target.value }))} autoComplete="name" /></label>
+                        <label>Contact number<input type="tel" value={beneficiaryForm.contact_number} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, contact_number: event.target.value }))} autoComplete="tel" /></label>
+                        <div className="beneficiary-form-wide beneficiary-intervention-picker">
+                          <span>Activities / interventions provided (select all that apply)</span>
+                          {(activitiesByProgram[beneficiaryForm.program_id] ?? (beneficiaryForm.program_id === program.id ? activities : [])).length
+                            ? (activitiesByProgram[beneficiaryForm.program_id] ?? (beneficiaryForm.program_id === program.id ? activities : [])).map((activity) => <label key={activity.id}><input type="checkbox" checked={beneficiaryForm.activity_ids.includes(activity.id)} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, activity_ids: event.target.checked ? [...current.activity_ids, activity.id] : current.activity_ids.filter((id) => id !== activity.id) }))} /><span>{activity.name}</span></label>)
+                            : <small>No activities are available for this program.</small>}
+                        </div>
+                        <label>Province<input value={beneficiaryForm.province} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, province: event.target.value }))} /></label>
                         <label>Municipality<input value={beneficiaryForm.municipality} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, municipality: event.target.value }))} /></label>
                         <label>Barangay<input value={beneficiaryForm.barangay} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, barangay: event.target.value }))} /></label>
-                        <label className="beneficiary-form-wide">Assistance received<textarea rows={3} value={beneficiaryForm.assistance_received} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, assistance_received: event.target.value }))} /></label>
+                        <label className="beneficiary-form-wide">Other assistance/interventions received<textarea rows={3} value={beneficiaryForm.other_assistance_interventions} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, other_assistance_interventions: event.target.value }))} /></label>
+                        <label className="beneficiary-form-wide">Additional details<textarea rows={3} value={beneficiaryForm.additional_details} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, additional_details: event.target.value }))} /></label>
                       </div>
                       <div className="beneficiary-form-actions"><button type="button" className="button secondary" disabled={beneficiarySaving} onClick={() => setBeneficiaryDialogOpen(false)}>Cancel</button><button type="button" className="button primary" disabled={beneficiarySaving} onClick={() => void saveBeneficiaryRecord()}><Save size={14} /> {beneficiarySaving ? "Saving…" : "Save beneficiary"}</button></div>
                     </dialog>
                   </div>}
-                  {beneficiaryToDelete && <div className="dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget && !beneficiaryDeleting) setBeneficiaryToDelete(null); }}>
+                  {beneficiaryToDelete && canEditBeneficiaries && <div className="dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget && !beneficiaryDeleting) setBeneficiaryToDelete(null); }}>
                     <dialog open className="activity-dialog beneficiary-delete-dialog">
-                      <div className="detail-heading"><div><p className="eyebrow">Confirm deletion</p><h2>Delete beneficiary record?</h2><p className="detail-subtitle">This cannot be undone. The record for {beneficiaryToDelete.beneficiary_name || beneficiaryToDelete.beneficiary_code || "this beneficiary"} will be permanently removed.</p></div><button type="button" className="icon-button" aria-label="Close deletion confirmation" disabled={beneficiaryDeleting} onClick={() => setBeneficiaryToDelete(null)}><X size={17} /></button></div>
+                      <div className="detail-heading"><div><p className="eyebrow">Confirm deletion</p><h2>Delete beneficiary record?</h2><p className="detail-subtitle">This cannot be undone. The record for {beneficiaryToDelete.beneficiary_name || beneficiaryToDelete.beneficiary_acronym || "this beneficiary"} will be permanently removed.</p></div><button type="button" className="icon-button" aria-label="Close deletion confirmation" disabled={beneficiaryDeleting} onClick={() => setBeneficiaryToDelete(null)}><X size={17} /></button></div>
                       <div className="beneficiary-form-actions"><button type="button" className="button secondary" disabled={beneficiaryDeleting} onClick={() => setBeneficiaryToDelete(null)}>Cancel</button><button type="button" className="button danger-outline" disabled={beneficiaryDeleting} onClick={() => void deleteBeneficiaryRecord()}><Trash2 size={14} /> {beneficiaryDeleting ? "Deleting…" : "Delete record"}</button></div>
                     </dialog>
                   </div>}
@@ -2956,6 +3101,7 @@ function App() {
                           <label>
                             Obligations
                             <input type="number" min="0" value={newActivity.spent} disabled={!canManageFinance} onChange={(event) => setNewActivity({ ...newActivity, spent: event.target.value })} placeholder="0.00" />
+                            <small>Total activity obligations, including obligated supplier lines. Changes here update the unitemized portion.</small>
                           </label>
                           <label>
                             Current workflow step
@@ -3065,8 +3211,19 @@ function App() {
                             </div>
                           </div>
                           <div className="timeline-section-label">Workflow progress</div>
+                          {activeSteps.length > 0 && <label className="workflow-step-picker">
+                            Select workflow step
+                            <select
+                              value={selectedActivityWorkflowStep?.id ?? ""}
+                              onChange={(event) => setWorkflowStepSelections((current) => ({ ...current, [selectedActivity.id]: event.target.value }))}
+                            >
+                              {activeSteps.map((step, index) => <option key={step.id} value={step.id}>{index + 1}. {step.title}</option>)}
+                            </select>
+                          </label>}
+                          {workflowProcurementSummary}
                           <div className="timeline">
-                            {activeSteps.map((step, index) => {
+                            {selectedActivityWorkflowStep ? [selectedActivityWorkflowStep].map((step) => {
+                              const index = selectedActivityWorkflowIndex;
                               const currentStepIndex = activeSteps.findIndex((item) => item.title === selectedActivity.currentStep);
                               const stepDone = index < currentStepIndex || selectedActivity.status === "Completed";
                               const stepCurrent = index === currentStepIndex && selectedActivity.status !== "Completed";
@@ -3145,7 +3302,7 @@ function App() {
                                 </div>
                               </div>
                               );
-                            })}
+                            }) : null}
                           </div>
                           <div className="activity-status-actions">
                             {canEdit && <button className="button primary" onClick={saveActivityChanges}><Save size={14} /> Save changes</button>}
@@ -3280,8 +3437,19 @@ function App() {
                               <div><small>Workflow progress</small><strong>{getActivityProgress(selectedActivity)}%</strong></div>
                               <div><small>Current step</small><strong>{getNumberedStep(steps, selectedActivity.currentStep)}</strong></div>
                             </div>
+                            {activeSteps.length > 0 && <label className="workflow-step-picker">
+                              Select workflow step
+                              <select
+                                value={selectedActivityWorkflowStep?.id ?? ""}
+                                onChange={(event) => setWorkflowStepSelections((current) => ({ ...current, [selectedActivity.id]: event.target.value }))}
+                              >
+                                {activeSteps.map((step, index) => <option key={step.id} value={step.id}>{index + 1}. {step.title}</option>)}
+                              </select>
+                            </label>}
+                            {workflowProcurementSummary}
                             <div className="timeline">
-                              {activeSteps.map((step, index) => {
+                              {selectedActivityWorkflowStep ? [selectedActivityWorkflowStep].map((step) => {
+                                const index = selectedActivityWorkflowIndex;
                                 const completed = getCompletedSubSteps(selectedActivity, step, index);
                                 const currentIndex = activeSteps.findIndex((item) => item.title === selectedActivity.currentStep);
                                 const stepDone = index < currentIndex || selectedActivity.status === "Completed";
@@ -3298,7 +3466,7 @@ function App() {
                                     </div>
                                   </div>
                                 </div>;
-                              })}
+                              }) : null}
                             </div>
                           </div>
                         ) : activityDialogTab === "procurement" ? (

@@ -41,6 +41,7 @@ export type DatabaseActivity = {
   fiscal_year: number | null;
   approved_budget: number;
   recorded_spending: number;
+  unitemized_obligations: number;
   activity_design: string | null;
   status: string;
   current_step_id: string | null;
@@ -112,6 +113,9 @@ export type ProcurementItem = {
   quantity: number;
   unit: string;
   unit_cost: number;
+  workflow_step_id: string | null;
+  obligated_amount: number;
+  obligation_status: "Not obligated" | "Partially obligated" | "Obligated" | "Cancelled";
   delivery_status: string;
   delivery_date: string | null;
 };
@@ -119,12 +123,18 @@ export type ProcurementItem = {
 export type BeneficiaryRecord = {
   id: string;
   program_id: string;
-  activity_id: string | null;
   beneficiary_name: string | null;
-  beneficiary_code: string | null;
+  beneficiary_acronym: string | null;
+  fca_category: string | null;
+  membership_count: number | null;
+  contact_person: string | null;
+  contact_number: string | null;
+  additional_details: string | null;
+  province: string | null;
   municipality: string | null;
   barangay: string | null;
-  assistance_received: string;
+  other_assistance_interventions: string | null;
+  activity_ids: string[];
   created_at: string;
   updated_at: string;
 };
@@ -254,7 +264,7 @@ export async function loadProcurementItems(activityId: string) {
   return (data ?? []) as ProcurementItem[];
 }
 
-export async function saveProcurementItem(values: Partial<ProcurementItem> & Pick<ProcurementItem, "program_id" | "activity_id" | "category" | "item_description" | "supplier_name" | "procurement_method" | "quantity" | "unit" | "unit_cost" | "delivery_status">) {
+export async function saveProcurementItem(values: Partial<ProcurementItem> & Pick<ProcurementItem, "program_id" | "activity_id" | "category" | "item_description" | "supplier_name" | "procurement_method" | "quantity" | "unit" | "unit_cost" | "workflow_step_id" | "obligated_amount" | "obligation_status" | "delivery_status">) {
   const { id, ...fields } = values;
   const query = id
     ? requireClient().from("activity_procurement_items").update(fields).eq("id", id).select().single()
@@ -279,23 +289,49 @@ export async function loadBeneficiaries(programId?: string) {
     if (programId) query = query.eq("program_id", programId);
     const { data, error } = await query.range(offset, offset + pageSize - 1);
     if (error) throw error;
-    const page = (data ?? []) as BeneficiaryRecord[];
-    records.push(...page);
+    const page = (data ?? []) as Omit<BeneficiaryRecord, "activity_ids">[];
+    if (page.length) {
+      const { data: interventionRows, error: interventionError } = await client
+        .from("program_beneficiary_interventions")
+        .select("beneficiary_id, activity_id")
+        .in("beneficiary_id", page.map((record) => record.id));
+      if (interventionError) throw interventionError;
+      const activityIdsByBeneficiary = new Map<string, string[]>();
+      for (const row of interventionRows ?? []) {
+        const activityIds = activityIdsByBeneficiary.get(row.beneficiary_id) ?? [];
+        activityIds.push(row.activity_id);
+        activityIdsByBeneficiary.set(row.beneficiary_id, activityIds);
+      }
+      records.push(...page.map((record) => ({
+        ...record,
+        activity_ids: activityIdsByBeneficiary.get(record.id) ?? [],
+      })));
+    }
     if (page.length < pageSize) return records;
   }
 }
 
-export async function saveBeneficiary(values: Partial<BeneficiaryRecord> & Pick<BeneficiaryRecord, "program_id" | "assistance_received">) {
+export async function saveBeneficiary(values: Partial<BeneficiaryRecord> & Pick<BeneficiaryRecord, "program_id" | "other_assistance_interventions">) {
   const fields = { ...values };
+  const activityIds = fields.activity_ids ?? [];
   delete fields.id;
   delete fields.created_at;
   delete fields.updated_at;
+  delete fields.activity_ids;
   const query = values.id
     ? requireClient().from("program_beneficiaries").update({ ...fields, updated_at: new Date().toISOString() }).eq("id", values.id).select().single()
     : requireClient().from("program_beneficiaries").insert(fields).select().single();
   const { data, error } = await query;
   if (error) throw error;
-  return data as BeneficiaryRecord;
+  const beneficiary = data as Omit<BeneficiaryRecord, "activity_ids">;
+  const { error: interventionError } = await requireClient().rpc("replace_beneficiary_interventions", {
+    target_beneficiary_id: beneficiary.id,
+    target_activity_ids: activityIds,
+  });
+  if (interventionError) {
+    throw new Error(`Beneficiary details were saved, but intervention links could not be updated. Reload the register and edit the beneficiary again. ${interventionError.message}`);
+  }
+  return { ...beneficiary, activity_ids: activityIds } as BeneficiaryRecord;
 }
 
 export async function deleteBeneficiary(id: string) {
