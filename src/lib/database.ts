@@ -99,6 +99,7 @@ export type ProcurementPlanItem = {
   remarks: string;
   created_at: string;
   updated_at: string;
+  custom_values?: Record<string, unknown>;
 };
 
 export type ProcurementItem = {
@@ -118,6 +119,27 @@ export type ProcurementItem = {
   obligation_status: "Not obligated" | "Partially obligated" | "Obligated" | "Cancelled";
   delivery_status: string;
   delivery_date: string | null;
+};
+
+export type FinanceSheetType = ProcurementPlanType;
+export type FinanceSheetCustomColumn = {
+  id: string;
+  label: string;
+  type: "text" | "number" | "date";
+  bold?: boolean;
+  color?: string;
+  background?: string;
+  numberFormat?: "default" | "currency" | "percent";
+};
+export type FinanceSheetPreferences = {
+  id: string;
+  program_id: string;
+  fiscal_year: number;
+  sheet_type: FinanceSheetType;
+  custom_columns: FinanceSheetCustomColumn[];
+  view_options: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
 };
 
 export type BeneficiaryRecord = {
@@ -209,6 +231,28 @@ export async function saveAnnualAllocation(values: Partial<AnnualProgramAllocati
   const { data, error } = await query;
   if (error) throw error;
   return data as AnnualProgramAllocation;
+}
+
+export async function loadFinanceSheetPreferences(programId: string, fiscalYear: number, sheetType: FinanceSheetType) {
+  const { data, error } = await requireClient().from("program_finance_sheet_preferences")
+    .select("*").eq("program_id", programId).eq("fiscal_year", fiscalYear).eq("sheet_type", sheetType).maybeSingle();
+  if (error) throw error;
+  return (data ?? null) as FinanceSheetPreferences | null;
+}
+
+export async function saveFinanceSheetPreferences(values: Pick<FinanceSheetPreferences, "program_id" | "fiscal_year" | "sheet_type" | "custom_columns" | "view_options">) {
+  const { data, error } = await requireClient().from("program_finance_sheet_preferences")
+    .upsert(values, { onConflict: "program_id,fiscal_year,sheet_type" }).select().single();
+  if (error) throw error;
+  return data as FinanceSheetPreferences;
+}
+
+export async function loadFinanceProcurementItems(programId: string, activityIds: string[]) {
+  if (!activityIds.length) return [] as ProcurementItem[];
+  const { data, error } = await requireClient().from("activity_procurement_items")
+    .select("*").eq("program_id", programId).in("activity_id", activityIds).order("created_at");
+  if (error) throw error;
+  return (data ?? []) as ProcurementItem[];
 }
 
 export async function deleteAnnualAllocation(id: string) {

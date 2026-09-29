@@ -28,8 +28,10 @@ import {
   X,
 } from "lucide-react";
 import "./App.css";
-import { createManagedUser, createProgram, createWorkflowStep, databaseConfigured, deleteActivity as deleteDatabaseActivity, deleteAnnualAllocation, deleteBeneficiary, deleteProcurementItem, deleteProcurementPlanItem, getAuthSession, loadActivities, loadAdminDatabaseTables, loadAnnualAllocations, loadAuditLogs, loadBeneficiaries, loadCalendarDayNotes, loadMembers, loadProcurementItems, loadProcurementPlanSheet, loadProcurementPlanYears, loadPrograms, loadProfile, loadWorkflowSteps, manageProgramUser, reorderWorkflowSteps, saveAnnualAllocation, saveBeneficiary, saveCalendarActivitySchedule, saveCalendarDayNote, saveProcurementItem, saveProcurementPlanItem, saveProcurementPlanSheet, signIn, signOut, subscribeToAuth, updateActivity as updateDatabaseActivity, updateProgram as updateDatabaseProgram, updateWorkflowStep } from "./lib/database";
-import type { AnnualProgramAllocation, AppProfile, AuditLog, BeneficiaryRecord, CalendarDayNote, ProcurementItem, ProcurementPlanItem, ProcurementPlanSheet, ProcurementPlanType, ProgramMember } from "./lib/database";
+import { createManagedUser, createProgram, createWorkflowStep, databaseConfigured, deleteActivity as deleteDatabaseActivity, deleteAnnualAllocation, deleteBeneficiary, deleteProcurementItem, deleteProcurementPlanItem, getAuthSession, loadActivities, loadAdminDatabaseTables, loadAnnualAllocations, loadAuditLogs, loadBeneficiaries, loadCalendarDayNotes, loadFinanceSheetPreferences, loadMembers, loadProcurementItems, loadProcurementPlanSheet, loadProcurementPlanYears, loadPrograms, loadProfile, loadWorkflowSteps, manageProgramUser, reorderWorkflowSteps, saveAnnualAllocation, saveBeneficiary, saveCalendarActivitySchedule, saveCalendarDayNote, saveFinanceSheetPreferences, saveProcurementItem, saveProcurementPlanItem, saveProcurementPlanSheet, signIn, signOut, subscribeToAuth, updateActivity as updateDatabaseActivity, updateProgram as updateDatabaseProgram, updateWorkflowStep } from "./lib/database";
+import type { AnnualProgramAllocation, AppProfile, AuditLog, BeneficiaryRecord, CalendarDayNote, FinanceSheetPreferences, FinanceSheetType, ProcurementItem, ProcurementPlanItem, ProcurementPlanSheet, ProcurementPlanType, ProgramMember } from "./lib/database";
+import { FinanceSpreadsheet } from "./components/FinanceSpreadsheet";
+import type { FinanceGridColumn, FinanceGridOptions, FinanceGridRow } from "./components/FinanceSpreadsheet";
 
 type WorkflowStep = {
   id: string;
@@ -82,6 +84,10 @@ function getActivityYear(activity: Pick<Activity, "startDate" | "fiscalYear">) {
   if (!activity.startDate) return null;
   const year = Number(activity.startDate.slice(0, 4));
   return Number.isFinite(year) ? year : null;
+}
+
+function financePreferenceType(sheet: ProcurementPlanType): FinanceSheetType {
+  return sheet;
 }
 
 function toLocalDateKey(date: Date) {
@@ -168,6 +174,20 @@ const appPlanCsvColumns = [
   ["procurement_strategy", "Procurement strategy / tools"],
   ["remarks", "Remarks"],
 ] as const;
+const appFinanceGridColumns: FinanceGridColumn[] = [
+  { key: "project_title", label: "Project title", type: "text" },
+  { key: "implementing_unit", label: "End-user / unit", type: "text" },
+  { key: "project_description", label: "Project description", type: "text" },
+  { key: "procurement_mode", label: "Procurement mode", type: "text" },
+  { key: "early_procurement_activity", label: "Early procurement", type: "text" },
+  { key: "bid_evaluation_criteria", label: "Evaluation criteria", type: "text" },
+  { key: "procurement_start", label: "Start month", type: "date" },
+  { key: "procurement_end", label: "End month", type: "date" },
+  { key: "source_of_fund", label: "Fund source", type: "text" },
+  { key: "estimated_budget", label: "Estimated budget", type: "number", numberFormat: "currency" },
+  { key: "procurement_strategy", label: "Strategy / tools", type: "text" },
+  { key: "remarks", label: "Remarks", type: "text" },
+];
 type DashboardChartMetric = "appropriation" | "allotment" | "obligations" | "disbursements" | "accountsPayable" | "cashAdvances" | "liquidation" | "savings" | "activityBudget" | "appBudget" | "totalActivities" | "completedActivities" | "notCompletedActivities" | "overdueActivities";
 type DashboardChartDatum = { label: string; value: number };
 type AllocationDraft = {
@@ -473,6 +493,8 @@ function App() {
   const [selectedFiscalYear, setSelectedFiscalYear] = useState(new Date().getFullYear());
   const [procurementPlanYears, setProcurementPlanYears] = useState<number[]>([]);
   const [financeSheet, setFinanceSheet] = useState<ProcurementPlanType>("APP");
+  const [financeSheetPreferences, setFinanceSheetPreferences] = useState<FinanceSheetPreferences | null>(null);
+  const [financeSheetPreferencesScope, setFinanceSheetPreferencesScope] = useState<string | null>(null);
   const [procurementPlanSheet, setProcurementPlanSheet] = useState<ProcurementPlanSheet | null>(null);
   const [procurementPlanItems, setProcurementPlanItems] = useState<ProcurementPlanItem[]>([]);
   const [procurementPlanDrafts, setProcurementPlanDrafts] = useState<Record<string, AppPlanRowDraft>>({});
@@ -482,8 +504,6 @@ function App() {
   const [procurementPlanSavingId, setProcurementPlanSavingId] = useState<string | null>(null);
   const [procurementPlanImporting, setProcurementPlanImporting] = useState(false);
   const appPlanImportInputRef = useRef<HTMLInputElement>(null);
-  const [appPlanColumnWidths, setAppPlanColumnWidths] = useState([180, 130, 180, 130, 125, 190, 115, 115, 120, 160, 160, 170, 115]);
-  const [appColumnResize, setAppColumnResize] = useState<{ index: number; startX: number; startWidth: number } | null>(null);
   const [dashboardProgressView, setDashboardProgressView] = useState<"graph" | "list">("graph");
   const [showDashboardProgressSettings, setShowDashboardProgressSettings] = useState(false);
   const [dashboardFiscalYear, setDashboardFiscalYear] = useState(new Date().getFullYear());
@@ -807,8 +827,7 @@ function App() {
   }, [activeTab, program.id]);
 
   useEffect(() => {
-    if (!databaseConfigured || !program.id || activeTab !== "finance") return;
-    if (financeSheet !== "APP") return;
+    if (!databaseConfigured || !program.id || activeTab !== "finance" || (financeSheet !== "APP" && financeSheet !== "WFP" && financeSheet !== "PPMP")) return;
     let currentRequest = true;
     const loadPlan = async () => {
       await Promise.resolve();
@@ -832,7 +851,7 @@ function App() {
         });
         setProcurementPlanDrafts({});
       } catch (error) {
-        if (currentRequest) setNotice(error instanceof Error ? `Could not load the FY ${selectedFiscalYear} APP: ${error.message}` : "Could not load the annual procurement plan");
+        if (currentRequest) setNotice(error instanceof Error ? `Could not load the FY ${selectedFiscalYear} ${financeSheet} sheet: ${error.message}` : `Could not load the FY ${selectedFiscalYear} ${financeSheet} sheet`);
       } finally {
         if (currentRequest) setProcurementPlanLoading(false);
       }
@@ -840,6 +859,54 @@ function App() {
     void loadPlan();
     return () => { currentRequest = false; };
   }, [activeTab, financeSheet, program.id, selectedFiscalYear]);
+
+  const currentFinancePreferenceType = financePreferenceType(financeSheet);
+  const currentFinancePreferenceScope = currentFinancePreferenceType ? `${program.id}:${selectedFiscalYear}:${currentFinancePreferenceType}` : "";
+  const financePreferencesReady = Boolean(currentFinancePreferenceType && financeSheetPreferencesScope === currentFinancePreferenceScope && financeSheetPreferences);
+  const currentFinanceCustomColumns = financePreferencesReady ? financeSheetPreferences?.custom_columns ?? [] : [];
+  const currentFinanceViewOptions = financePreferencesReady ? financeSheetPreferences?.view_options as FinanceGridOptions ?? {} : {};
+  const updateFinanceSheetPreferences = (patch: Partial<Pick<FinanceSheetPreferences, "custom_columns" | "view_options">>) => {
+    if (!financePreferencesReady || !financeSheetPreferences) return;
+    setFinanceSheetPreferences((current) => current ? { ...current, ...patch } : current);
+  };
+  useEffect(() => {
+    if (!databaseConfigured || !program.id || activeTab !== "finance" || !currentFinancePreferenceType) return;
+    let active = true;
+    void loadFinanceSheetPreferences(program.id, selectedFiscalYear, currentFinancePreferenceType).then((preferences) => {
+      if (!active) return;
+      setFinanceSheetPreferences(preferences ?? {
+        id: "",
+        program_id: program.id,
+        fiscal_year: selectedFiscalYear,
+        sheet_type: currentFinancePreferenceType,
+        custom_columns: [],
+        view_options: {},
+        created_at: "",
+        updated_at: "",
+      });
+      setFinanceSheetPreferencesScope(currentFinancePreferenceScope);
+    }).catch((error: unknown) => {
+      if (active) setNotice(error instanceof Error ? `Could not load finance sheet settings: ${error.message}` : "Could not load finance sheet settings");
+    });
+    return () => { active = false; };
+  }, [activeTab, currentFinancePreferenceScope, currentFinancePreferenceType, program.id, selectedFiscalYear]);
+
+  useEffect(() => {
+    if (!databaseConfigured || !program.id || activeTab !== "finance" || !currentFinancePreferenceType || !financeSheetPreferences
+      || financeSheetPreferencesScope !== currentFinancePreferenceScope) return;
+    const timeout = window.setTimeout(() => {
+      void saveFinanceSheetPreferences({
+        program_id: program.id,
+        fiscal_year: selectedFiscalYear,
+        sheet_type: currentFinancePreferenceType,
+        custom_columns: financeSheetPreferences.custom_columns,
+        view_options: financeSheetPreferences.view_options,
+      }).then(setFinanceSheetPreferences).catch((error: unknown) => {
+        setNotice(error instanceof Error ? `Finance sheet settings were not saved: ${error.message}` : "Finance sheet settings were not saved");
+      });
+    }, 500);
+    return () => window.clearTimeout(timeout);
+  }, [activeTab, currentFinancePreferenceScope, currentFinancePreferenceType, financeSheetPreferences, financeSheetPreferencesScope, program.id, selectedFiscalYear]);
 
   useEffect(() => {
     if (!databaseConfigured || !programOptions.length) return;
@@ -1626,13 +1693,13 @@ function App() {
       [key]: { ...(current[key] ?? (row ? allocationToDraft(row) : createEmptyAllocationDraft())), [field]: value },
     }));
   };
-  const saveAllocationRow = async (row: AnnualProgramAllocation | null) => {
+  const saveAllocationRow = async (row: AnnualProgramAllocation | null, draftOverride?: AllocationDraft): Promise<AnnualProgramAllocation | null> => {
     if (!canManageFinance) {
       setNotice("Only this program's program admin can edit financial records");
-      return;
+      return null;
     }
     const rowKey = allocationRowDraftKey(row);
-    const draft = allocationRowDrafts[rowKey] ?? (row ? allocationToDraft(row) : createEmptyAllocationDraft());
+    const draft = draftOverride ?? allocationRowDrafts[rowKey] ?? (row ? allocationToDraft(row) : createEmptyAllocationDraft());
     const numberFields: Array<keyof Pick<AllocationDraft, "appropriation" | "allotment_received" | "disbursements" | "accounts_payable" | "cash_advances" | "liquidation" | "savings">> = [
       "appropriation", "allotment_received", "disbursements",
       "accounts_payable", "cash_advances", "liquidation", "savings",
@@ -1640,11 +1707,11 @@ function App() {
     const amounts = Object.fromEntries(numberFields.map((field) => [field, Number(draft[field])])) as Record<typeof numberFields[number], number>;
     if (!draft.fund_source.trim() || numberFields.some((field) => !Number.isFinite(amounts[field]) || amounts[field] < 0)) {
       setNotice("Enter a fund source and valid non-negative amounts");
-      return;
+      return null;
     }
     if (amounts.allotment_received > amounts.appropriation || amounts.disbursements > amounts.allotment_received) {
       setNotice("Check the financial ceilings: allotments and disbursements cannot exceed the appropriation and received allotment");
-      return;
+      return null;
     }
     setAllocationRowSavingId(rowKey);
     try {
@@ -1677,8 +1744,10 @@ function App() {
         return next;
       });
       setNotice(`FY ${savedRow.fiscal_year} allocation row saved`);
+      return savedRow;
     } catch (error) {
       setNotice(`Allocation row was not saved: ${getDatabaseErrorMessage(error)}`);
+      return null;
     } finally {
       setAllocationRowSavingId(null);
     }
@@ -1738,23 +1807,23 @@ function App() {
       setNotice(`APP details were not saved: ${getDatabaseErrorMessage(error)}`);
     }
   };
-  const saveProcurementPlanRow = async (row: ProcurementPlanItem | null): Promise<boolean> => {
+  const saveProcurementPlanRow = async (row: ProcurementPlanItem | null, draftOverride?: AppPlanRowDraft, customValues?: Record<string, unknown>): Promise<ProcurementPlanItem | null> => {
     if (!canManageFinance) {
       setNotice("Only this program's program admin can edit financial records");
-      return false;
+      return null;
     }
     const rowKey = procurementPlanRowKey(row);
-    const draft = procurementPlanDrafts[rowKey] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft());
+    const draft = draftOverride ?? procurementPlanDrafts[rowKey] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft());
     const estimatedBudget = Number(draft.estimated_budget);
     if (!draft.project_title.trim() || !draft.implementing_unit.trim() || !Number.isFinite(estimatedBudget) || estimatedBudget < 0) {
       setNotice("Enter a project title, implementing unit, and a valid non-negative estimated budget");
-      return false;
+      return null;
     }
     const startDate = draft.procurement_start ? `${draft.procurement_start}-01` : null;
     const endDate = draft.procurement_end ? `${draft.procurement_end}-01` : null;
     if (startDate && endDate && startDate > endDate) {
       setNotice("The procurement end month must be the same as or later than the start month");
-      return false;
+      return null;
     }
     setProcurementPlanSavingId(rowKey);
     try {
@@ -1779,6 +1848,7 @@ function App() {
         estimated_budget: estimatedBudget,
         procurement_strategy: draft.procurement_strategy.trim(),
         remarks: draft.remarks.trim(),
+        custom_values: customValues ?? row?.custom_values ?? {},
       });
       setProcurementPlanSheet(sheet);
       setProcurementPlanYears((current) => Array.from(new Set([selectedFiscalYear, ...current])).sort((a, b) => b - a));
@@ -1794,10 +1864,10 @@ function App() {
       } catch (error) {
         setNotice(`APP project saved, but its activity could not be refreshed: ${getDatabaseErrorMessage(error)}`);
       }
-      return true;
+      return savedRow;
     } catch (error) {
       setNotice(`APP project was not saved: ${getDatabaseErrorMessage(error)}`);
-      return false;
+      return null;
     } finally {
       setProcurementPlanSavingId(null);
     }
@@ -1934,33 +2004,6 @@ function App() {
       setProcurementPlanImporting(false);
     }
   };
-  const appPlanResizeHandle = (index: number) => (
-    <span
-      className="finance-column-resize-handle"
-      role="separator"
-      aria-label={`Resize APP column ${index + 1}`}
-      aria-orientation="vertical"
-      aria-valuenow={appPlanColumnWidths[index] ?? 160}
-      tabIndex={0}
-      onPointerDown={(event) => {
-        event.currentTarget.setPointerCapture(event.pointerId);
-        setAppColumnResize({ index, startX: event.clientX, startWidth: appPlanColumnWidths[index] ?? 160 });
-      }}
-      onPointerMove={(event) => {
-        if (appColumnResize?.index !== index) return;
-        const width = Math.max(120, appColumnResize.startWidth + event.clientX - appColumnResize.startX);
-        setAppPlanColumnWidths((current) => current.map((currentWidth, columnIndex) => columnIndex === index ? width : currentWidth));
-      }}
-      onPointerUp={() => setAppColumnResize(null)}
-      onPointerCancel={() => setAppColumnResize(null)}
-      onKeyDown={(event) => {
-        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-        event.preventDefault();
-        const change = event.key === "ArrowRight" ? 16 : -16;
-        setAppPlanColumnWidths((current) => current.map((width, columnIndex) => columnIndex === index ? Math.max(120, width + change) : width));
-      }}
-    />
-  );
   const updateProcurementDraft = (draftKey: string, updates: Partial<ProcurementDraft>) => {
     setProcurementDrafts((current) => current.map((draft) => draft.draftKey === draftKey ? { ...draft, ...updates } : draft));
   };
@@ -2022,6 +2065,97 @@ function App() {
     } catch (error) {
       setNotice(`Could not delete supplier line: ${getDatabaseErrorMessage(error)}`);
     }
+  };
+  const saveAppFinanceGridRow = async (row: FinanceGridRow, values: Record<string, unknown>, customValues: Record<string, unknown>) => {
+    if (!canManageFinance) throw new Error("Only this program's program admin can edit financial records");
+    const existing = procurementPlanItems.find((item) => item.id === row.id);
+    const draft: AppPlanRowDraft = {
+      project_title: String(values.project_title ?? ""),
+      implementing_unit: String(values.implementing_unit ?? ""),
+      project_description: String(values.project_description ?? ""),
+      procurement_mode: String(values.procurement_mode ?? ""),
+      early_procurement_activity: ["true", "yes", "1"].includes(String(values.early_procurement_activity).toLowerCase()),
+      bid_evaluation_criteria: String(values.bid_evaluation_criteria ?? ""),
+      procurement_start: String(values.procurement_start ?? "").slice(0, 7),
+      procurement_end: String(values.procurement_end ?? "").slice(0, 7),
+      source_of_fund: String(values.source_of_fund ?? ""),
+      estimated_budget: String(values.estimated_budget ?? "0"),
+      procurement_strategy: String(values.procurement_strategy ?? ""),
+      remarks: String(values.remarks ?? ""),
+    };
+    const saved = await saveProcurementPlanRow(existing ?? null, draft, customValues);
+    if (!saved) throw new Error("APP project could not be saved; check the required fields and values.");
+  };
+  const saveFlexiblePlanGridRow = async (planType: "WFP" | "PPMP", row: FinanceGridRow, customValues: Record<string, unknown>) => {
+    if (!canManageFinance) throw new Error("Only this program's program admin can edit financial records");
+    const existing = procurementPlanItems.find((item) => item.id === row.id);
+    const sheet = procurementPlanSheet ?? await saveProcurementPlanSheet({
+      program_id: program.id,
+      fiscal_year: selectedFiscalYear,
+      plan_type: planType,
+      is_continuing: false,
+      plan_status: "Indicative",
+      version_no: "",
+    });
+    const saved = await saveProcurementPlanItem({
+      id: existing?.id,
+      plan_id: sheet.id,
+      project_title: existing?.project_title ?? "",
+      implementing_unit: existing?.implementing_unit ?? "",
+      project_description: existing?.project_description ?? "",
+      procurement_mode: existing?.procurement_mode ?? "",
+      early_procurement_activity: existing?.early_procurement_activity ?? false,
+      bid_evaluation_criteria: existing?.bid_evaluation_criteria ?? "",
+      procurement_start: existing?.procurement_start ?? null,
+      procurement_end: existing?.procurement_end ?? null,
+      source_of_fund: existing?.source_of_fund ?? "",
+      estimated_budget: existing?.estimated_budget ?? 0,
+      procurement_strategy: existing?.procurement_strategy ?? "",
+      remarks: existing?.remarks ?? "",
+      custom_values: customValues,
+    });
+    setProcurementPlanSheet(sheet);
+    setProcurementPlanYears((current) => Array.from(new Set([selectedFiscalYear, ...current])).sort((a, b) => b - a));
+    setProcurementPlanItems((current) => [...current.filter((item) => item.id !== saved.id), saved].sort((a, b) => a.created_at.localeCompare(b.created_at)));
+  };
+  const addPlanGridRow = async (planType: ProcurementPlanType) => {
+    if (!canManageFinance) return;
+    if (planType === "APP") {
+      const newItem = await saveProcurementPlanRow(null, {
+        ...createEmptyAppPlanRowDraft(),
+        project_title: "New procurement project",
+        implementing_unit: "To be assigned",
+      });
+      if (!newItem) throw new Error("Could not add an APP project.");
+      return;
+    }
+    const sheet = procurementPlanSheet ?? await saveProcurementPlanSheet({
+      program_id: program.id,
+      fiscal_year: selectedFiscalYear,
+      plan_type: planType,
+      is_continuing: false,
+      plan_status: "Indicative",
+      version_no: "",
+    });
+    const row = await saveProcurementPlanItem({
+      plan_id: sheet.id,
+      project_title: "",
+      implementing_unit: "",
+      project_description: "",
+      procurement_mode: "",
+      early_procurement_activity: false,
+      bid_evaluation_criteria: "",
+      procurement_start: null,
+      procurement_end: null,
+      source_of_fund: "",
+      estimated_budget: 0,
+      procurement_strategy: "",
+      remarks: "",
+      custom_values: {},
+    });
+    setProcurementPlanSheet(sheet);
+    setProcurementPlanYears((current) => Array.from(new Set([selectedFiscalYear, ...current])).sort((a, b) => b - a));
+    setProcurementPlanItems((current) => [...current, row]);
   };
   const supplierEstimatedTotal = procurementItems.reduce((sum, item) => sum + Number(item.quantity) * Number(item.unit_cost), 0);
   const supplierObligationTotal = procurementItems
@@ -2291,9 +2425,25 @@ function App() {
       }
     >
       <main className="main-content">
-        <header className="topbar">
+        <header className={`topbar ${systemRole === "superadmin" ? "topbar-superadmin" : ""}`}>
           <div className="breadcrumbs">
             <strong className="current-program-label">{systemRole === "superadmin" ? "DA-RFO-CAR Tracking System" : `${program.acronym} · ${program.title}`}</strong>
+            {systemRole === "superadmin" && <label className="superadmin-topbar-program">
+              <span>Program</span>
+              <select aria-label="Select program workspace" value={dashboardProgramFilter} onChange={(event) => {
+                const value = event.target.value;
+                setDashboardProgramFilter(value);
+                if (value === "all") {
+                  setActiveTab("dashboard");
+                  setNotice("All programs overview");
+                } else {
+                  selectProgram(value);
+                }
+              }}>
+                <option value="all">All programs</option>
+                {programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}
+              </select>
+            </label>}
           </div>
           <div className="top-actions">
             <nav className="top-nav" aria-label="Program builder views">
@@ -2374,33 +2524,17 @@ function App() {
           </div>
         </header>
         <div className={`content-wrap ${activeTab === "finance" ? "content-wrap-finance" : ""} ${activeTab === "calendar" ? "content-wrap-calendar" : ""}`}>
-          <section className="page-heading">
+          <section className={`page-heading ${activeTab === "finance" ? "page-heading-finance" : ""}`}>
             <div>
               <p className="eyebrow">
                 {activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "calendar" ? "Activity calendar" : activeTab === "beneficiaries" ? "Beneficiary register" : activeTab === "finance" ? "Financial management" : activeTab === "settings" && (settingsSection === "database" || settingsSection === "programs") ? "Superadmin tools" : `${program.acronym} workspace`}
               </p>
               <div className="page-heading-title-row">
-                {activeTab === "dashboard" && systemRole === "superadmin" && <label className="superadmin-program-view">
-                  <span>Program view</span>
-                  <select value={dashboardProgramFilter} onChange={(event) => {
-                    const value = event.target.value;
-                    setDashboardProgramFilter(value);
-                    if (value === "all") {
-                      setActiveTab("dashboard");
-                      setNotice("All programs overview");
-                    } else {
-                      selectProgram(value);
-                    }
-                  }} aria-label="Choose program dashboard view">
-                    <option value="all">All programs</option>
-                    {programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}
-                  </select>
-                </label>}
-                <h1>{activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "details" ? "Program details" : activeTab === "activities" ? "Activity register" : activeTab === "calendar" ? "Activity calendar" : activeTab === "beneficiaries" ? "Beneficiary register" : activeTab === "finance" ? "Annual allocations & utilization" : "Settings"}</h1>
+                <h1>{activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "details" ? "Program details" : activeTab === "activities" ? "Activity register" : activeTab === "calendar" ? "Activity calendar" : activeTab === "beneficiaries" ? "Beneficiary register" : activeTab === "finance" ? "Financial worksheets" : "Settings"}</h1>
               </div>
-              <p className="page-intro">
-                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "Monitor all programs, activities, budgets, and user access." : "Monitor activity totals, utilization, and overdue work.") : activeTab === "calendar" ? "Color-coded schedules can be edited here, and each day can have a shared note." : activeTab === "beneficiaries" ? "Record beneficiary identifiers, location, assistance received, and the activity supported." : activeTab === "finance" ? "Track appropriations, allotments, obligations, disbursements, accounts payable, cash advances, liquidation, and savings by fiscal year." : activeTab === "settings" && settingsSection === "programs" ? "Create programs and manage program details from the Superadmin workspace." : activeTab === "settings" && settingsSection === "database" ? "Browse database records in the read-only Superadmin database viewer." : "Manage the program's operational sequence and fund-tracking rules."}
-              </p>
+              {activeTab !== "finance" && <p className="page-intro">
+                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "Monitor all programs, activities, budgets, and user access." : "Monitor activity totals, utilization, and overdue work.") : activeTab === "calendar" ? "Color-coded schedules can be edited here, and each day can have a shared note." : activeTab === "beneficiaries" ? "Record beneficiary identifiers, location, assistance received, and the activity supported." : activeTab === "settings" && settingsSection === "programs" ? "Create programs and manage program details from the Superadmin workspace." : activeTab === "settings" && settingsSection === "database" ? "Browse database records in the read-only Superadmin database viewer." : "Manage the program's operational sequence and fund-tracking rules."}
+              </p>}
             </div>
             <div className="heading-actions">
               <span className="draft-pill">
@@ -2468,9 +2602,8 @@ function App() {
           ) : activeTab === "finance" ? (
             <section className="finance-page">
               <div className="finance-toolbar">
-                <div><p className="eyebrow">{program.acronym} · Annual financial records{systemRole === "superadmin" ? " · Superadmin read-only view" : ""}</p><h2>{financeSheet === "APP" ? "Annual Procurement Plan (APP)" : financeSheet === "WFP" ? "Work and Financial Plan (WFP)" : "Project Procurement Management Plan (PPMP)"}</h2><p>View {financeSheet} sheets by fiscal year. Financial editing is restricted to this program's administrator.</p></div>
+                <div><p className="eyebrow">{program.acronym}{systemRole === "superadmin" ? " · Superadmin read-only" : ""} · FY {selectedFiscalYear}</p><h2>{financeSheet === "APP" ? "Annual Procurement Plan (APP)" : financeSheet === "WFP" ? "Work and Financial Plan (WFP)" : "Project Procurement Management Plan (PPMP)"}</h2></div>
                 <div className="finance-toolbar-actions">
-                  {systemRole === "superadmin" && <label className="fiscal-year-select finance-program-select">Program<select aria-label="Select a program to view its financial records" value={program.id} onChange={(event) => { if (event.target.value !== program.id) selectProgram(event.target.value); }}><option value="" disabled>Select a program</option>{programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}</select></label>}
                   <label className="fiscal-year-select">Fiscal year<select value={selectedFiscalYear} onChange={(event) => setSelectedFiscalYear(Number(event.target.value))}>{Array.from(new Set([...annualAllocations.map((row) => row.fiscal_year), ...procurementPlanYears, selectedFiscalYear, currentFiscalYear - 1, currentFiscalYear, currentFiscalYear + 1])).sort((a, b) => b - a).map((year) => <option key={year} value={year}>FY {year}</option>)}</select></label>
                   <button type="button" className="button secondary" onClick={() => setShowAllocationEditor(true)}><Settings size={15} /> {canManageFinance ? "Edit annual financial details" : "View annual financial details"}</button>
                 </div>
@@ -2486,33 +2619,6 @@ function App() {
                   disbursements: total.disbursements + Number(row.disbursements),
                 }), { appropriation: 0, allotment: 0, disbursements: 0 });
                 const peso = (amount: number) => `₱${amount.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                const visibleAppPlanColumnWidths = appPlanColumnWidths.slice(0, canManageFinance ? 13 : 12);
-                const appPlanColumnWidthTotal = visibleAppPlanColumnWidths.reduce((total, width) => total + width, 0);
-                const renderAppPlanRow = (row: ProcurementPlanItem | null) => {
-                  const key = procurementPlanRowKey(row);
-                  const draft = procurementPlanDrafts[key] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft());
-                  const saving = procurementPlanSavingId === key;
-                  const cell = (field: keyof AppPlanRowDraft, label: string, rawValue: string, displayValue = rawValue || "—") => <td title={`${label}: ${displayValue}`}>
-                    <button type="button" className="finance-cell-trigger" disabled={saving} aria-label={`View ${label}: ${displayValue}`} onClick={() => setFinanceCellEditor({ row, field, label })}>{displayValue}</button>
-                  </td>;
-                  const startMonth = draft.procurement_start;
-                  const endMonth = draft.procurement_end;
-                  return <tr key={key}>
-                    {cell("project_title", "Project title", draft.project_title)}
-                    {cell("implementing_unit", "End-user or implementing unit", draft.implementing_unit)}
-                    {cell("project_description", "General project description", draft.project_description)}
-                    {cell("procurement_mode", "Mode of procurement", draft.procurement_mode)}
-                    {cell("early_procurement_activity", "Early procurement activity", draft.early_procurement_activity ? "true" : "false", draft.early_procurement_activity ? "Yes" : "No")}
-                    {cell("bid_evaluation_criteria", "Bid evaluation criteria", draft.bid_evaluation_criteria)}
-                    {cell("procurement_start", "Start of procurement activity", startMonth, startMonth ? `${startMonth.slice(5, 7)}/${startMonth.slice(0, 4)}` : "—")}
-                    {cell("procurement_end", "End of procurement activity", endMonth, endMonth ? `${endMonth.slice(5, 7)}/${endMonth.slice(0, 4)}` : "—")}
-                    {cell("source_of_fund", "Source of fund", draft.source_of_fund)}
-                    {cell("estimated_budget", "Estimated budget / approved contract budget", draft.estimated_budget, peso(Number(draft.estimated_budget) || 0))}
-                    {cell("procurement_strategy", "Procurement strategy or tools", draft.procurement_strategy)}
-                    {cell("remarks", "Remarks", draft.remarks)}
-                    {canManageFinance && <td><div className="finance-row-actions"><button type="button" className="button primary spreadsheet-save" disabled={saving || !procurementPlanDrafts[key]} onClick={() => void saveProcurementPlanRow(row)}><Save size={13} /> {saving ? "Saving" : "Save"}</button>{procurementPlanDrafts[key] && <button type="button" className="button secondary spreadsheet-save" disabled={saving} onClick={() => setProcurementPlanDrafts((current) => { const next = { ...current }; delete next[key]; return next; })}>Cancel</button>}{row && <button type="button" className="icon-button danger" aria-label={`Delete APP project ${row.project_title}`} onClick={() => void deleteProcurementPlanRow(row)}><Trash2 size={15} /></button>}</div></td>}
-                  </tr>;
-                };
                 return <>
                   <div className="finance-summary-grid">
                     <article><small>Allocated budget / appropriation</small><strong>{peso(totals.appropriation)}</strong><span>Annual budget authority</span></article>
@@ -2520,7 +2626,7 @@ function App() {
                     <article><small>Obligations</small><strong>{peso(annualActivityObligations)}</strong><span>Automatically totaled from activity records</span></article>
                     <article><small>Disbursements</small><strong>{peso(totals.disbursements)}</strong><span>Recorded financial disbursements</span></article>
                   </div>
-                  <nav className="finance-sheet-tabs" aria-label="Annual financial worksheets">{(["APP", "WFP", "PPMP"] as ProcurementPlanType[]).map((sheet) => <button key={sheet} type="button" className={financeSheet === sheet ? "finance-sheet-tab active" : "finance-sheet-tab"} aria-current={financeSheet === sheet ? "page" : undefined} onClick={() => setFinanceSheet(sheet)}>{sheet}</button>)}</nav>
+                  <nav className="finance-sheet-tabs" aria-label="Financial worksheets">{(["APP", "WFP", "PPMP"] as const).map((sheet) => <button key={sheet} type="button" className={financeSheet === sheet ? "finance-sheet-tab active" : "finance-sheet-tab"} aria-current={financeSheet === sheet ? "page" : undefined} onClick={() => setFinanceSheet(sheet)}>{sheet}</button>)}</nav>
                   {financeSheet === "APP" ? <>
                     <section className="finance-card app-plan-header">
                       <div><p className="eyebrow">{program.acronym} · FY {selectedFiscalYear}</p><h3>Annual Procurement Plan{procurementPlanHeader.is_continuing ? " — Continuing" : ""}</h3><p className="app-sheet-save-status">{procurementPlanSheet ? `${procurementPlanSheet.plan_status} APP saved` : "New APP sheet"}</p></div>
@@ -2533,12 +2639,62 @@ function App() {
                     </section>
                     <section className="finance-card app-plan-card">
                       <div className="section-title app-plan-section-heading"><div><h3>APP project details</h3><p>{procurementPlanItems.length} procurement project{procurementPlanItems.length === 1 ? "" : "s"} · enter dates as month and year. Saving a project also creates or updates its Activity and Calendar entry.</p></div><div className="app-plan-transfer-actions"><button type="button" className="button secondary" onClick={exportAppPlanCsv} disabled={!procurementPlanItems.length}><Download size={14} /> Export CSV</button>{canManageFinance && <><button type="button" className="button secondary" onClick={() => appPlanImportInputRef.current?.click()} disabled={procurementPlanImporting}><Upload size={14} /> {procurementPlanImporting ? "Importing…" : "Import CSV"}</button><input ref={appPlanImportInputRef} className="visually-hidden" type="file" accept=".csv,text/csv" aria-label="Import APP projects from CSV" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void importAppPlanCsv(file); event.currentTarget.value = ""; }} /></>}</div></div>
-                      {procurementPlanLoading ? <div className="empty-state">Loading FY {selectedFiscalYear} APP…</div> : procurementPlanItems.length || canManageFinance ? <div className="finance-table-wrap app-plan-table-wrap"><table className="finance-table app-plan-table"><colgroup>{visibleAppPlanColumnWidths.map((width, index) => <col key={index} style={{ width: `${width / appPlanColumnWidthTotal * 100}%` }} />)}</colgroup><thead><tr><th className="app-plan-group-header" colSpan={6} title="Procurement project details">Project details</th><th className="app-plan-group-header app-plan-timeline-header" colSpan={2} title="Projected timeline (month and year)">Timeline (MM/YYYY)</th><th className="app-plan-group-header app-plan-funding-header" colSpan={2} title="Funding details">Funding</th><th className="app-plan-group-header app-plan-strategy-header" rowSpan={2}>{appPlanResizeHandle(10)}<span title="Procurement strategy or tools">Strategy / tools</span></th><th className="app-plan-group-header app-plan-remarks-header" rowSpan={2}>{appPlanResizeHandle(11)}<span title="Remarks and other relevant descriptions of the procurement project, if applicable">Remarks</span></th>{canManageFinance && <th className="app-plan-group-header app-plan-actions-header" rowSpan={2}>{appPlanResizeHandle(12)}Actions</th>}</tr><tr>{["Project title", "End-user or implementing unit", "General description of the project", "Mode of procurement", "Early procurement activity? (Yes/No)", "Criteria for bid evaluation (including sustainability and domestic preference)", "Start of procurement activity", "End of procurement activity", "Source of fund", "Estimated budget / approved budget for the contract (PhP)"].map((heading, index) => {
-                        const shortHeadings = ["Project title", "End user / unit", "Project description", "Procurement mode", "Early procurement?", "Evaluation criteria", "Start", "End", "Fund source", "Est. budget (PHP)"];
-                        return <th className="app-plan-column-header" key={heading} title={heading} aria-label={heading}>{appPlanResizeHandle(index)}<span>{shortHeadings[index]}</span></th>;
-                      })}</tr></thead><tbody>{procurementPlanItems.map((row) => renderAppPlanRow(row))}{canManageFinance && renderAppPlanRow(null)}</tbody><tfoot><tr><th colSpan={9}>APP estimated budget total</th><td>{peso(procurementPlanItems.reduce((sum, row) => sum + Number(row.estimated_budget), 0))}</td><td colSpan={canManageFinance ? 3 : 2}></td></tr></tfoot></table></div> : <div className="empty-state">No APP projects have been entered for FY {selectedFiscalYear}.</div>}
+                      {procurementPlanLoading || !financePreferencesReady ? <div className="empty-state">Loading FY {selectedFiscalYear} APP…</div> : <FinanceSpreadsheet
+                        rows={procurementPlanItems.map((row) => ({
+                          id: row.id,
+                          values: {
+                            project_title: row.project_title,
+                            implementing_unit: row.implementing_unit,
+                            project_description: row.project_description,
+                            procurement_mode: row.procurement_mode,
+                            early_procurement_activity: row.early_procurement_activity ? "Yes" : "No",
+                            bid_evaluation_criteria: row.bid_evaluation_criteria,
+                            procurement_start: row.procurement_start ?? "",
+                            procurement_end: row.procurement_end ?? "",
+                            source_of_fund: row.source_of_fund,
+                            estimated_budget: row.estimated_budget,
+                            procurement_strategy: row.procurement_strategy,
+                            remarks: row.remarks,
+                          },
+                          customValues: row.custom_values ?? {},
+                        }))}
+                        columns={appFinanceGridColumns}
+                        customColumns={currentFinanceCustomColumns}
+                        options={currentFinanceViewOptions}
+                        canEdit={canManageFinance}
+                        onOptionsChange={(view_options) => updateFinanceSheetPreferences({ view_options })}
+                        onColumnsChange={(custom_columns) => updateFinanceSheetPreferences({ custom_columns })}
+                        onSave={(row, values, customValues) => saveAppFinanceGridRow(row, values, customValues)}
+                        onAdd={() => addPlanGridRow("APP")}
+                        onDelete={async (row) => {
+                          const item = procurementPlanItems.find((entry) => entry.id === row.id);
+                          if (item) await deleteProcurementPlanRow(item);
+                        }}
+                        onError={(error) => setNotice(`Finance sheet action failed: ${getDatabaseErrorMessage(error)}`)}
+                      />}
                     </section>
-                  </> : <section className="finance-card finance-sheet-placeholder"><p className="eyebrow">FY {selectedFiscalYear} · {financeSheet}</p><h3>{financeSheet === "WFP" ? "Work and Financial Plan" : "Project Procurement Management Plan"}</h3><p>This separate fiscal-year worksheet is reserved for {financeSheet}. Its table will be added when you provide that template.</p></section>}
+                  </> : <section className="finance-card app-plan-card">
+                    <div className="section-title app-plan-section-heading"><div><h3>{financeSheet === "WFP" ? "Work and Financial Plan" : "Project Procurement Management Plan"}</h3><p>Create your own worksheet structure for FY {selectedFiscalYear}. Add columns and rows to define the template; the sheet is saved for this program and fiscal year.</p></div></div>
+                    {procurementPlanLoading || !financePreferencesReady ? <div className="empty-state">Loading FY {selectedFiscalYear} {financeSheet}…</div> : <>
+                      {!currentFinanceCustomColumns.length && <p className="finance-sheet-empty-hint">This worksheet has no template yet. Add the columns needed for this {financeSheet} before entering its data.</p>}
+                      <FinanceSpreadsheet
+                        rows={procurementPlanItems.map((row) => ({ id: row.id, values: {}, customValues: row.custom_values ?? {} }))}
+                        columns={[]}
+                        customColumns={currentFinanceCustomColumns}
+                        options={currentFinanceViewOptions}
+                        canEdit={canManageFinance}
+                        onOptionsChange={(view_options) => updateFinanceSheetPreferences({ view_options })}
+                        onColumnsChange={(custom_columns) => updateFinanceSheetPreferences({ custom_columns })}
+                        onSave={(row, _values, customValues) => saveFlexiblePlanGridRow(financeSheet === "WFP" ? "WFP" : "PPMP", row, customValues)}
+                        onAdd={() => addPlanGridRow(financeSheet === "WFP" ? "WFP" : "PPMP")}
+                        onDelete={async (row) => {
+                          await deleteProcurementPlanItem(row.id);
+                          setProcurementPlanItems((current) => current.filter((item) => item.id !== row.id));
+                        }}
+                        onError={(error) => setNotice(`Finance sheet action failed: ${getDatabaseErrorMessage(error)}`)}
+                      />
+                    </>}
+                  </section>}
                 </>;
               })()}
               {showAllocationEditor && <div className="dialog-overlay finance-editor-overlay" onClick={(event) => { if (event.target === event.currentTarget) setShowAllocationEditor(false); }}>
