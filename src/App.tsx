@@ -1,12 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
   Bell,
+  CalendarDays,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ClipboardList,
   CircleDollarSign,
+  Download,
   DollarSign,
   FileText,
   GripVertical,
@@ -24,8 +28,8 @@ import {
   X,
 } from "lucide-react";
 import "./App.css";
-import { createActivity as createDatabaseActivity, createManagedUser, createProgram, createWorkflowStep, databaseConfigured, deleteActivity as deleteDatabaseActivity, deleteAnnualAllocation, deleteProcurementItem, getAuthSession, loadActivities, loadAdminDatabaseTables, loadAnnualAllocations, loadAuditLogs, loadMembers, loadProcurementItems, loadPrograms, loadProfile, loadWorkflowSteps, manageProgramUser, reorderWorkflowSteps, saveAnnualAllocation, saveProcurementItem, signIn, signOut, subscribeToAuth, updateActivity as updateDatabaseActivity, updateProgram as updateDatabaseProgram, updateWorkflowStep } from "./lib/database";
-import type { AnnualProgramAllocation, AppProfile, AuditLog, ProcurementItem, ProgramMember } from "./lib/database";
+import { createManagedUser, createProgram, createWorkflowStep, databaseConfigured, deleteActivity as deleteDatabaseActivity, deleteAnnualAllocation, deleteBeneficiary, deleteProcurementItem, deleteProcurementPlanItem, getAuthSession, loadActivities, loadAdminDatabaseTables, loadAnnualAllocations, loadAuditLogs, loadBeneficiaries, loadCalendarDayNotes, loadMembers, loadProcurementItems, loadProcurementPlanSheet, loadProcurementPlanYears, loadPrograms, loadProfile, loadWorkflowSteps, manageProgramUser, reorderWorkflowSteps, saveAnnualAllocation, saveBeneficiary, saveCalendarActivitySchedule, saveCalendarDayNote, saveProcurementItem, saveProcurementPlanItem, saveProcurementPlanSheet, signIn, signOut, subscribeToAuth, updateActivity as updateDatabaseActivity, updateProgram as updateDatabaseProgram, updateWorkflowStep } from "./lib/database";
+import type { AnnualProgramAllocation, AppProfile, AuditLog, BeneficiaryRecord, CalendarDayNote, ProcurementItem, ProcurementPlanItem, ProcurementPlanSheet, ProcurementPlanType, ProgramMember } from "./lib/database";
 
 type WorkflowStep = {
   id: string;
@@ -55,6 +59,9 @@ type ProgramConfig = {
 };
 type Activity = {
   id: string;
+  activityCode: string;
+  programId?: string;
+  fiscalYear?: number | null;
   name: string;
   location: string;
   startDate: string;
@@ -69,22 +76,189 @@ type Activity = {
   completedSubSteps?: Record<string, string[]>;
 };
 
+function getActivityYear(activity: Pick<Activity, "startDate" | "fiscalYear">) {
+  if (activity.fiscalYear) return activity.fiscalYear;
+  if (!activity.startDate) return null;
+  const year = Number(activity.startDate.slice(0, 4));
+  return Number.isFinite(year) ? year : null;
+}
+
+function toLocalDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatScheduleDate(value: string) {
+  return value ? new Date(`${value}T12:00:00`).toLocaleDateString() : "Not scheduled";
+}
+
+function formatActivitySchedule(activity: Pick<Activity, "activityCode" | "startDate" | "endDate">) {
+  if (!activity.startDate) return "Not scheduled";
+  const isAppSchedule = activity.activityCode.startsWith("APP-");
+  const formatDate = (value: string) => isAppSchedule
+    ? new Date(`${value.slice(0, 7)}-01T12:00:00`).toLocaleDateString(undefined, { month: "short", year: "numeric" })
+    : formatScheduleDate(value);
+  return `${formatDate(activity.startDate)}${activity.endDate ? ` to ${formatDate(activity.endDate)}` : ""}`;
+}
+
+function getActivityCalendarEndDate(activity: Pick<Activity, "activityCode" | "startDate" | "endDate">) {
+  const isAppSchedule = activity.activityCode.startsWith("APP-");
+  if (!activity.endDate && !isAppSchedule) return activity.startDate;
+  const calendarEnd = activity.endDate || activity.startDate;
+  if (!calendarEnd || !isAppSchedule) return calendarEnd;
+  const [year, month] = calendarEnd.split("-").map(Number);
+  return toLocalDateKey(new Date(year, month, 0));
+}
+
+function calendarActivityColorClass(status: string) {
+  const normalizedStatus = status.toLowerCase();
+  if (normalizedStatus.includes("completed")) return "calendar-status-completed";
+  if (normalizedStatus.includes("revision")) return "calendar-status-revision";
+  if (normalizedStatus.includes("progress")) return "calendar-status-progress";
+  if (normalizedStatus.includes("planning") || normalizedStatus.includes("pending")) return "calendar-status-planning";
+  return "calendar-status-other";
+}
+
 type ProcurementDraft = Omit<ProcurementItem, "id" | "program_id" | "activity_id">;
+type AppPlanRowDraft = {
+  project_title: string;
+  implementing_unit: string;
+  project_description: string;
+  procurement_mode: string;
+  early_procurement_activity: boolean;
+  bid_evaluation_criteria: string;
+  procurement_start: string;
+  procurement_end: string;
+  source_of_fund: string;
+  estimated_budget: string;
+  procurement_strategy: string;
+  remarks: string;
+};
+const appPlanCsvColumns = [
+  ["project_title", "Project title"],
+  ["implementing_unit", "End-user / implementing unit"],
+  ["project_description", "Project description"],
+  ["procurement_mode", "Procurement mode"],
+  ["early_procurement_activity", "Early procurement activity"],
+  ["bid_evaluation_criteria", "Bid evaluation criteria"],
+  ["procurement_start", "Procurement start (YYYY-MM)"],
+  ["procurement_end", "Procurement end (YYYY-MM)"],
+  ["source_of_fund", "Source of fund"],
+  ["estimated_budget", "Estimated budget (PHP)"],
+  ["procurement_strategy", "Procurement strategy / tools"],
+  ["remarks", "Remarks"],
+] as const;
+type DashboardChartMetric = "appropriation" | "allotment" | "obligations" | "disbursements" | "accountsPayable" | "cashAdvances" | "liquidation" | "savings" | "activityBudget" | "appBudget" | "totalActivities" | "completedActivities" | "notCompletedActivities" | "overdueActivities";
+type DashboardChartDatum = { label: string; value: number };
+type AllocationDraft = {
+  fund_source: string;
+  allotment_reference: string;
+  disbursement_reference: string;
+  appropriation: string;
+  allotment_received: string;
+  disbursements: string;
+  accounts_payable: string;
+  cash_advances: string;
+  liquidation: string;
+  savings: string;
+  remarks: string;
+};
+type DashboardFinancialColumn = "appropriation" | "allotment" | "obligations" | "disbursements" | "accountsPayable" | "cashAdvances" | "liquidation" | "savings" | "activityBudget" | "appBudget";
 
 const createEmptyAllocationDraft = () => ({
   fund_source: "General Appropriations Act (GAA)",
   allotment_reference: "",
-  obligation_reference: "",
   disbursement_reference: "",
   appropriation: "",
   allotment_received: "",
-  obligations: "",
   disbursements: "",
   accounts_payable: "",
   cash_advances: "",
   liquidation: "",
   savings: "",
   remarks: "",
+});
+
+const parseCsv = (contents: string): string[][] => {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  const input = contents.replace(/^\uFEFF/, "");
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index];
+    if (quoted) {
+      if (character === '"' && input[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = false;
+      } else {
+        field += character;
+      }
+    } else if (character === '"' && field.length === 0) {
+      quoted = true;
+    } else if (character === ",") {
+      row.push(field);
+      field = "";
+    } else if (character === "\n" || character === "\r") {
+      row.push(field);
+      if (row.some((value) => value.trim())) rows.push(row);
+      row = [];
+      field = "";
+      if (character === "\r" && input[index + 1] === "\n") index += 1;
+    } else {
+      field += character;
+    }
+  }
+  if (quoted) throw new Error("CSV contains an unclosed quoted field");
+  row.push(field);
+  if (row.some((value) => value.trim())) rows.push(row);
+  return rows;
+};
+
+const allocationToDraft = (row: AnnualProgramAllocation): AllocationDraft => ({
+  fund_source: row.fund_source,
+  allotment_reference: row.allotment_reference ?? "",
+  disbursement_reference: row.disbursement_reference ?? "",
+  appropriation: String(row.appropriation),
+  allotment_received: String(row.allotment_received),
+  disbursements: String(row.disbursements),
+  accounts_payable: String(row.accounts_payable),
+  cash_advances: String(row.cash_advances),
+  liquidation: String(row.liquidation),
+  savings: String(row.savings),
+  remarks: row.remarks ?? "",
+});
+const createEmptyAppPlanRowDraft = (): AppPlanRowDraft => ({
+  project_title: "",
+  implementing_unit: "",
+  project_description: "",
+  procurement_mode: "",
+  early_procurement_activity: false,
+  bid_evaluation_criteria: "",
+  procurement_start: "",
+  procurement_end: "",
+  source_of_fund: "",
+  estimated_budget: "",
+  procurement_strategy: "",
+  remarks: "",
+});
+const appPlanItemToDraft = (row: ProcurementPlanItem): AppPlanRowDraft => ({
+  project_title: row.project_title,
+  implementing_unit: row.implementing_unit,
+  project_description: row.project_description,
+  procurement_mode: row.procurement_mode,
+  early_procurement_activity: row.early_procurement_activity,
+  bid_evaluation_criteria: row.bid_evaluation_criteria,
+  procurement_start: row.procurement_start?.slice(0, 7) ?? "",
+  procurement_end: row.procurement_end?.slice(0, 7) ?? "",
+  source_of_fund: row.source_of_fund,
+  estimated_budget: String(row.estimated_budget),
+  procurement_strategy: row.procurement_strategy,
+  remarks: row.remarks,
 });
 
 const mapDatabaseStep = (step: import("./lib/database").DatabaseWorkflowStep): WorkflowStep => ({
@@ -100,11 +274,14 @@ const mapDatabaseStep = (step: import("./lib/database").DatabaseWorkflowStep): W
   subSteps: step.sub_steps ?? [],
 });
 
-const mapDatabaseActivity = (activity: import("./lib/database").DatabaseActivity, steps: WorkflowStep[]): Activity => ({
+const mapDatabaseActivity = (activity: import("./lib/database").DatabaseActivity, steps: WorkflowStep[], programId?: string): Activity => ({
   id: activity.id,
+  activityCode: activity.activity_code,
+  programId,
+  fiscalYear: activity.fiscal_year,
   name: activity.title,
   location: activity.location ?? "",
-  startDate: activity.start_date,
+  startDate: activity.start_date ?? "",
   endDate: activity.target_end_date ?? "",
   budget: Number(activity.approved_budget),
   spent: Number(activity.recorded_spending),
@@ -183,13 +360,13 @@ function App() {
   const [showStepDialog, setShowStepDialog] = useState(false);
   const [stepDialogEditing, setStepDialogEditing] = useState(false);
   const [selectedActivityId, setSelectedActivityId] = useState("");
+  const [dashboardActivityDialogTarget, setDashboardActivityDialogTarget] = useState<Activity | null>(null);
   const [expandedTimelineSteps, setExpandedTimelineSteps] = useState<Record<string, boolean>>({});
   const [pendingTimelineStep, setPendingTimelineStep] = useState<{ stepTitle: string; subStep: string; shouldComplete: boolean } | null>(null);
   const [remarkDrafts, setRemarkDrafts] = useState<Record<string, string>>({});
   const [session, setSession] = useState<Awaited<ReturnType<typeof getAuthSession>>>(null);
   const [authReady, setAuthReady] = useState(!databaseConfigured);
   const [profile, setProfile] = useState<AppProfile | null>(null);
-  const [profileLoadError, setProfileLoadError] = useState<{ userId: string; message: string } | null>(null);
   const [programRole, setProgramRole] = useState<ProgramMember["role"]>("viewer");
   const [systemRole, setSystemRole] = useState<"superadmin" | "user">("user");
   const [members, setMembers] = useState<ProgramMember[]>([]);
@@ -208,11 +385,41 @@ function App() {
   const [programDialogTab, setProgramDialogTab] = useState<"details" | "admins">("details");
   const [memberDialog, setMemberDialog] = useState<ProgramMember | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "programs" | "details" | "workflow" | "activities" | "settings" | "finance"
+    "dashboard" | "details" | "workflow" | "activities" | "calendar" | "beneficiaries" | "settings" | "finance"
   >("dashboard");
-  const [settingsSection, setSettingsSection] = useState<"fund-workflow" | "audit" | "database">("fund-workflow");
+  const [settingsSection, setSettingsSection] = useState<"fund-workflow" | "audit" | "database" | "programs">("fund-workflow");
   const [activityView] = useState<"timeline" | "table">("table");
   const [activitySearch, setActivitySearch] = useState("");
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState(() => toLocalDateKey(new Date()));
+  const [calendarDialogDay, setCalendarDialogDay] = useState<string | null>(null);
+  const [calendarDayNotes, setCalendarDayNotes] = useState<Record<string, CalendarDayNote>>({});
+  const [calendarNoteDrafts, setCalendarNoteDrafts] = useState<Record<string, string>>({});
+  const [calendarNotesLoadedScope, setCalendarNotesLoadedScope] = useState<string | null>(null);
+  const [calendarNotesLoadErrorScope, setCalendarNotesLoadErrorScope] = useState<string | null>(null);
+  const [calendarNotesReloadToken, setCalendarNotesReloadToken] = useState(0);
+  const [calendarNoteSaving, setCalendarNoteSaving] = useState(false);
+  const [calendarScheduleEditingId, setCalendarScheduleEditingId] = useState<string | null>(null);
+  const [calendarScheduleDraft, setCalendarScheduleDraft] = useState<{ startDate: string; endDate: string; isAppSchedule: boolean } | null>(null);
+  const [calendarScheduleSaving, setCalendarScheduleSaving] = useState(false);
+  const [beneficiaryRecords, setBeneficiaryRecords] = useState<BeneficiaryRecord[]>([]);
+  const [beneficiaryLoadedScope, setBeneficiaryLoadedScope] = useState<string | null>(null);
+  const [beneficiarySearch, setBeneficiarySearch] = useState("");
+  const [beneficiaryProgramFilter, setBeneficiaryProgramFilter] = useState("all");
+  const [beneficiaryDialogOpen, setBeneficiaryDialogOpen] = useState(false);
+  const [beneficiaryEditingId, setBeneficiaryEditingId] = useState<string | null>(null);
+  const [beneficiarySaving, setBeneficiarySaving] = useState(false);
+  const [beneficiaryToDelete, setBeneficiaryToDelete] = useState<BeneficiaryRecord | null>(null);
+  const [beneficiaryDeleting, setBeneficiaryDeleting] = useState(false);
+  const [beneficiaryForm, setBeneficiaryForm] = useState({
+    program_id: "",
+    activity_id: "",
+    beneficiary_name: "",
+    beneficiary_code: "",
+    municipality: "",
+    barangay: "",
+    assistance_received: "",
+  });
   const [showActivityForm, setShowActivityForm] = useState(false);
   const [editingActivityId, setEditingActivityId] = useState<string | null>(null);
   const [newActivity, setNewActivity] = useState({
@@ -233,11 +440,33 @@ function App() {
   const [selectedDatabaseTable, setSelectedDatabaseTable] = useState("programs");
   const [databaseLoading, setDatabaseLoading] = useState(false);
   const [annualAllocations, setAnnualAllocations] = useState<AnnualProgramAllocation[]>([]);
-  const [allocationSaving, setAllocationSaving] = useState(false);
-  const [editingAllocationId, setEditingAllocationId] = useState<string | null>(null);
-  const [showAllocationForm, setShowAllocationForm] = useState(false);
+  const [allocationsByProgram, setAllocationsByProgram] = useState<Record<string, AnnualProgramAllocation[]>>({});
+  const [allocationRowDrafts, setAllocationRowDrafts] = useState<Record<string, AllocationDraft>>({});
+  const [allocationRowSavingId, setAllocationRowSavingId] = useState<string | null>(null);
+  const [showAllocationEditor, setShowAllocationEditor] = useState(false);
   const [selectedFiscalYear, setSelectedFiscalYear] = useState(new Date().getFullYear());
-  const [allocationDraft, setAllocationDraft] = useState(createEmptyAllocationDraft);
+  const [procurementPlanYears, setProcurementPlanYears] = useState<number[]>([]);
+  const [financeSheet, setFinanceSheet] = useState<ProcurementPlanType>("APP");
+  const [procurementPlanSheet, setProcurementPlanSheet] = useState<ProcurementPlanSheet | null>(null);
+  const [procurementPlanItems, setProcurementPlanItems] = useState<ProcurementPlanItem[]>([]);
+  const [procurementPlanDrafts, setProcurementPlanDrafts] = useState<Record<string, AppPlanRowDraft>>({});
+  const [procurementPlanHeader, setProcurementPlanHeader] = useState({ is_continuing: false, plan_status: "Indicative" as "Indicative" | "Final", version_no: "" });
+  const [procurementPlanLoading, setProcurementPlanLoading] = useState(false);
+  const [procurementPlanSavingId, setProcurementPlanSavingId] = useState<string | null>(null);
+  const [procurementPlanImporting, setProcurementPlanImporting] = useState(false);
+  const appPlanImportInputRef = useRef<HTMLInputElement>(null);
+  const [appPlanColumnWidths, setAppPlanColumnWidths] = useState([180, 130, 180, 130, 125, 190, 115, 115, 120, 160, 160, 170, 115]);
+  const [appColumnResize, setAppColumnResize] = useState<{ index: number; startX: number; startWidth: number } | null>(null);
+  const [dashboardProgressView, setDashboardProgressView] = useState<"graph" | "list">("graph");
+  const [showDashboardProgressSettings, setShowDashboardProgressSettings] = useState(false);
+  const [dashboardFiscalYear, setDashboardFiscalYear] = useState(new Date().getFullYear());
+  const [dashboardProgramFilter, setDashboardProgramFilter] = useState("all");
+  const [dashboardStatusFilter, setDashboardStatusFilter] = useState("all");
+  const [dashboardChartMetric, setDashboardChartMetric] = useState<DashboardChartMetric | null>(null);
+  const [dashboardStatusDialog, setDashboardStatusDialog] = useState<string | null>(null);
+  const [dashboardFinancialColumns, setDashboardFinancialColumns] = useState<DashboardFinancialColumn[]>(["appropriation", "allotment", "obligations", "disbursements", "activityBudget", "appBudget"]);
+  const [dashboardAppBudgetsByProgram, setDashboardAppBudgetsByProgram] = useState<Record<string, number>>({});
+  const [showDashboardCardSettings, setShowDashboardCardSettings] = useState(false);
   const [procurementItems, setProcurementItems] = useState<ProcurementItem[]>([]);
   const [editingProcurementItemId, setEditingProcurementItemId] = useState<string | null>(null);
   const [procurementLoadedActivityId, setProcurementLoadedActivityId] = useState<string | null>(null);
@@ -257,22 +486,228 @@ function App() {
     () => steps.filter((step) => step.active),
     [steps],
   );
+  const calendarDays = useMemo(() => {
+    const firstOfMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
+    const firstVisibleDay = new Date(firstOfMonth);
+    firstVisibleDay.setDate(firstOfMonth.getDate() - firstOfMonth.getDay());
+    return Array.from({ length: 42 }, (_, index) => {
+      const date = new Date(firstVisibleDay);
+      date.setDate(firstVisibleDay.getDate() + index);
+      return { date, key: toLocalDateKey(date), inMonth: date.getMonth() === calendarMonth.getMonth() };
+    });
+  }, [calendarMonth]);
+  const calendarMonthTitle = calendarMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const calendarNotesScope = `${program.id}:${calendarDays[0].key}:${calendarDays[calendarDays.length - 1].key}`;
+  const calendarNotesLoading = activeTab === "calendar" && databaseConfigured && Boolean(session?.user.id && program.id)
+    && calendarNotesLoadedScope !== calendarNotesScope && calendarNotesLoadErrorScope !== calendarNotesScope;
+  const calendarNotesUnavailable = calendarNotesLoadErrorScope === calendarNotesScope;
+  const scheduledCalendarActivities = activities.filter((activity) => Boolean(activity.startDate));
+  const unscheduledCalendarActivities = activities.filter((activity) => !activity.startDate);
   const selectedStep = steps.find((step) => step.id === selectedId) ?? steps[0];
   const today = new Date().toISOString().slice(0, 10);
   const dashboardActivityMap = useMemo(() => ({ ...activitiesByProgram, [program.id]: activities }), [activities, activitiesByProgram, program.id]);
-  const dashboardActivities = systemRole === "superadmin" ? Object.values(dashboardActivityMap).flat() : activities;
+  const allDashboardActivities = systemRole === "superadmin" ? Object.values(dashboardActivityMap).flat() : activities;
+  const dashboardYearOptions = Array.from(new Set([
+    new Date().getFullYear(),
+    ...Object.values(allocationsByProgram).flat().map((allocation) => allocation.fiscal_year),
+    ...allDashboardActivities.map(getActivityYear).filter((year): year is number => year !== null),
+  ])).sort((a, b) => b - a);
+  const dashboardYear = dashboardFiscalYear;
+  const dashboardActivities = allDashboardActivities.filter((activity) =>
+    (dashboardProgramFilter === "all" || activity.programId === dashboardProgramFilter)
+    && getActivityYear(activity) === dashboardYear
+    && (dashboardStatusFilter === "all" || activity.status === dashboardStatusFilter),
+  );
   const dashboardTotals = useMemo(() => ({
     activities: dashboardActivities.length,
     budget: dashboardActivities.reduce((total, activity) => total + activity.budget, 0),
     spent: dashboardActivities.reduce((total, activity) => total + activity.spent, 0),
-    overdue: dashboardActivities.filter((activity) => activity.endDate < today && activity.status !== "Completed").length,
+    overdue: dashboardActivities.filter((activity) => Boolean(activity.endDate) && activity.endDate < today && activity.status !== "Completed").length,
+    completed: dashboardActivities.filter((activity) => activity.status === "Completed").length,
   }), [dashboardActivities, today]);
-  const dashboardProgramCount = systemRole === "superadmin" ? programOptions.length : 1;
+  const dashboardYearActivities = allDashboardActivities.filter((activity) =>
+    (dashboardProgramFilter === "all" || activity.programId === dashboardProgramFilter)
+    && getActivityYear(activity) === dashboardYear,
+  );
+  const dashboardObligations = dashboardYearActivities.reduce((total, activity) => total + activity.spent, 0);
+  const dashboardYearActivityBudget = dashboardYearActivities.reduce((total, activity) => total + activity.budget, 0);
+  const formatDashboardCurrency = (amount: number) => `₱${amount.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const dashboardAllocations = useMemo(() => (systemRole === "superadmin"
+    ? dashboardProgramFilter === "all"
+      ? Object.values(allocationsByProgram).flat()
+      : allocationsByProgram[dashboardProgramFilter] ?? []
+    : allocationsByProgram[program.id] ?? annualAllocations), [allocationsByProgram, annualAllocations, dashboardProgramFilter, program.id, systemRole]);
+  const dashboardYearAllocations = useMemo(
+    () => dashboardAllocations.filter((row) => row.fiscal_year === dashboardYear),
+    [dashboardAllocations, dashboardYear],
+  );
+  const dashboardFinancialTotals = useMemo(() => dashboardYearAllocations
+    .reduce((total, row) => ({
+      appropriation: total.appropriation + Number(row.appropriation),
+      allotment: total.allotment + Number(row.allotment_received),
+      disbursements: total.disbursements + Number(row.disbursements),
+      accountsPayable: total.accountsPayable + Number(row.accounts_payable),
+      cashAdvances: total.cashAdvances + Number(row.cash_advances),
+      liquidation: total.liquidation + Number(row.liquidation),
+      savings: total.savings + Number(row.savings),
+    }), { appropriation: 0, allotment: 0, disbursements: 0, accountsPayable: 0, cashAdvances: 0, liquidation: 0, savings: 0 }), [dashboardYearAllocations]);
+  const dashboardAppBudget = (systemRole === "superadmin" && dashboardProgramFilter === "all"
+    ? Object.values(dashboardAppBudgetsByProgram)
+    : [dashboardAppBudgetsByProgram[systemRole === "superadmin" ? dashboardProgramFilter : program.id] ?? 0])
+    .reduce((sum, amount) => sum + amount, 0);
+  const dashboardFinancialCardOptions: Array<{ id: DashboardFinancialColumn; label: string; value: number; detail: string; metric: DashboardChartMetric }> = [
+    { id: "appropriation", label: "Allocated budget / appropriation", value: dashboardFinancialTotals.appropriation, detail: "Annual budget authority", metric: "appropriation" },
+    { id: "allotment", label: "Allotment received", value: dashboardFinancialTotals.allotment, detail: "Available allotment", metric: "allotment" },
+    { id: "obligations", label: "Obligations", value: dashboardObligations, detail: "Computed from activity obligations", metric: "obligations" },
+    { id: "disbursements", label: "Disbursements", value: dashboardFinancialTotals.disbursements, detail: "Paid against recorded obligations", metric: "disbursements" },
+    { id: "accountsPayable", label: "Accounts payable", value: dashboardFinancialTotals.accountsPayable, detail: `FY ${dashboardYear}`, metric: "accountsPayable" },
+    { id: "cashAdvances", label: "Cash advances", value: dashboardFinancialTotals.cashAdvances, detail: `FY ${dashboardYear}`, metric: "cashAdvances" },
+    { id: "liquidation", label: "Liquidation", value: dashboardFinancialTotals.liquidation, detail: `FY ${dashboardYear}`, metric: "liquidation" },
+    { id: "savings", label: "Savings", value: dashboardFinancialTotals.savings, detail: `FY ${dashboardYear}`, metric: "savings" },
+    { id: "activityBudget", label: "Approved activity budget", value: dashboardYearActivityBudget, detail: "Across matching activities", metric: "activityBudget" },
+    { id: "appBudget", label: "APP planned procurement", value: dashboardAppBudget, detail: `FY ${dashboardYear} estimated contract amounts`, metric: "appBudget" },
+  ];
+  const dashboardProgramCount = systemRole === "superadmin" && dashboardProgramFilter === "all" ? programOptions.length : 1;
+  const dashboardScopeLabel = systemRole === "superadmin"
+    ? dashboardProgramFilter === "all" ? "All programs" : programOptions.find((item) => item.id === dashboardProgramFilter)?.acronym ?? "Selected program"
+    : program.acronym;
   const dashboardStatusSummary = useMemo(() => {
-    const counts = new Map<string, number>();
+    const statuses = Array.from(new Set(allDashboardActivities.map((activity) => activity.status))).sort();
+    const counts = new Map<string, number>(statuses.map((status) => [status, 0]));
     dashboardActivities.forEach((activity) => counts.set(activity.status, (counts.get(activity.status) ?? 0) + 1));
-    return Array.from(counts, ([label, count]) => ({ label, count, className: label === "Completed" ? "status-completed" : "status-progress" }));
-  }, [dashboardActivities]);
+    return Array.from(counts, ([label, count]) => ({
+      label,
+      count,
+      className: `dashboard-status-color-${statuses.indexOf(label) % 5}`,
+    }));
+  }, [allDashboardActivities, dashboardActivities]);
+  const dashboardChartTitles: Record<DashboardChartMetric, { title: string; unit: "currency" | "count" }> = {
+    appropriation: { title: "Allocated budget by program", unit: "currency" },
+    allotment: { title: "Allotment received by program", unit: "currency" },
+    obligations: { title: "Obligations by program", unit: "currency" },
+    disbursements: { title: "Disbursements by program", unit: "currency" },
+    accountsPayable: { title: "Accounts payable by program", unit: "currency" },
+    cashAdvances: { title: "Cash advances by program", unit: "currency" },
+    liquidation: { title: "Liquidation by program", unit: "currency" },
+    savings: { title: "Savings by program", unit: "currency" },
+    activityBudget: { title: "Approved activity budget by program", unit: "currency" },
+    appBudget: { title: "APP planned procurement by program", unit: "currency" },
+    totalActivities: { title: "Activities by program", unit: "count" },
+    completedActivities: { title: "Completed activities by program", unit: "count" },
+    notCompletedActivities: { title: "Activities not completed by program", unit: "count" },
+    overdueActivities: { title: "Overdue activities by program", unit: "count" },
+  };
+  const dashboardChartData = useMemo<DashboardChartDatum[]>(() => {
+    const selectedPrograms = systemRole === "superadmin"
+      ? dashboardProgramFilter === "all" ? programOptions : programOptions.filter((item) => item.id === dashboardProgramFilter)
+      : programOptions.filter((item) => item.id === program.id);
+    const financialFields: Partial<Record<DashboardChartMetric, keyof AnnualProgramAllocation>> = {
+      appropriation: "appropriation",
+      allotment: "allotment_received",
+      disbursements: "disbursements",
+      accountsPayable: "accounts_payable",
+      cashAdvances: "cash_advances",
+      liquidation: "liquidation",
+      savings: "savings",
+    };
+    return selectedPrograms.map((item) => {
+      const programActivities = dashboardActivities.filter((activity) => activity.programId === item.id);
+      const allocations = (allocationsByProgram[item.id] ?? []).filter((row) => row.fiscal_year === dashboardYear);
+      const financialField = dashboardChartMetric ? financialFields[dashboardChartMetric] : undefined;
+      let value = 0;
+      if (financialField) {
+        value = allocations.reduce((sum, row) => sum + Number(row[financialField] ?? 0), 0);
+      } else if (dashboardChartMetric === "obligations") {
+        value = allDashboardActivities
+          .filter((activity) => activity.programId === item.id && getActivityYear(activity) === dashboardYear)
+          .reduce((sum, activity) => sum + activity.spent, 0);
+      } else if (dashboardChartMetric === "activityBudget") {
+        value = allDashboardActivities
+          .filter((activity) => activity.programId === item.id && getActivityYear(activity) === dashboardYear)
+          .reduce((sum, activity) => sum + activity.budget, 0);
+      } else if (dashboardChartMetric === "appBudget") {
+        value = dashboardAppBudgetsByProgram[item.id] ?? 0;
+      } else if (dashboardChartMetric === "totalActivities") {
+        value = programActivities.length;
+      } else if (dashboardChartMetric === "completedActivities") {
+        value = programActivities.filter((activity) => activity.status === "Completed").length;
+      } else if (dashboardChartMetric === "notCompletedActivities") {
+        value = programActivities.filter((activity) => activity.status !== "Completed").length;
+      } else if (dashboardChartMetric === "overdueActivities") {
+        value = programActivities.filter((activity) => Boolean(activity.endDate) && activity.endDate < today && activity.status !== "Completed").length;
+      }
+      return { label: item.acronym, value };
+    });
+  }, [allDashboardActivities, allocationsByProgram, dashboardActivities, dashboardAppBudgetsByProgram, dashboardChartMetric, dashboardProgramFilter, dashboardYear, program.id, programOptions, systemRole, today]);
+  const dashboardChartActivities = (() => {
+    if (!dashboardChartMetric) return [];
+    const source = dashboardChartMetric === "activityBudget" || dashboardChartMetric === "obligations"
+      ? dashboardYearActivities
+      : dashboardActivities;
+    const matchingActivities = dashboardChartMetric === "completedActivities"
+      ? source.filter((activity) => activity.status === "Completed")
+      : dashboardChartMetric === "notCompletedActivities"
+        ? source.filter((activity) => activity.status !== "Completed")
+        : dashboardChartMetric === "overdueActivities"
+          ? source.filter((activity) => Boolean(activity.endDate) && activity.endDate < today && activity.status !== "Completed")
+          : source;
+    return [...matchingActivities].sort((a, b) => b.startDate.localeCompare(a.startDate) || a.name.localeCompare(b.name));
+  })();
+  const dashboardStatusDialogActivities = dashboardStatusDialog
+    ? allDashboardActivities.filter((activity) =>
+      (dashboardProgramFilter === "all" || activity.programId === dashboardProgramFilter)
+      && getActivityYear(activity) === dashboardYear
+      && activity.status === dashboardStatusDialog,
+    ).sort((a, b) => b.startDate.localeCompare(a.startDate) || a.name.localeCompare(b.name))
+    : [];
+  const dashboardActivityDialogSteps = programOptions.find((item) => item.id === dashboardActivityDialogTarget?.programId)?.steps ?? steps;
+  const dashboardActivityDialogActiveSteps = dashboardActivityDialogSteps.filter((step) => step.active);
+  const dashboardActivityDialogCurrentStep = dashboardActivityDialogSteps.find((step) => step.title === dashboardActivityDialogTarget?.currentStep);
+  const openDashboardActivity = (activity: Activity) => {
+    setDashboardActivityDialogTarget(activity);
+    setSelectedActivityId(activity.id);
+    setShowActivityDialog(true);
+    setDashboardChartMetric(null);
+    setDashboardStatusDialog(null);
+  };
+  const downloadDashboardChart = (format: "csv" | "svg") => {
+    if (!dashboardChartMetric) return;
+    const chart = dashboardChartTitles[dashboardChartMetric];
+    const safeLabel = (value: string) => value.replace(/[&<>"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character] ?? character);
+    let contents: string;
+    let mimeType: string;
+    let extension: string;
+    if (format === "csv") {
+      const escapeCsv = (value: string) => `"${value.replace(/"/g, '""')}"`;
+      contents = `\uFEFF${escapeCsv(chart.title)},${escapeCsv(chart.unit === "currency" ? "Amount (PHP)" : "Activities")}\r\n${dashboardChartData.map((row) => `${escapeCsv(row.label)},${row.value}`).join("\r\n")}`;
+      mimeType = "text/csv;charset=utf-8";
+      extension = "csv";
+    } else {
+      const width = 960;
+      const left = 190;
+      const barWidth = 570;
+      const rowHeight = 52;
+      const top = 86;
+      const height = Math.max(170, top + dashboardChartData.length * rowHeight + 24);
+      const max = Math.max(1, ...dashboardChartData.map((row) => row.value));
+      const bars = dashboardChartData.map((row, index) => {
+        const y = top + index * rowHeight;
+        const value = chart.unit === "currency" ? formatDashboardCurrency(row.value) : row.value.toLocaleString();
+        return `<text x="18" y="${y + 20}" font-size="15" fill="#405b4e">${safeLabel(row.label)}</text><rect x="${left}" y="${y}" width="${barWidth}" height="26" rx="6" fill="#edf2ee"/><rect x="${left}" y="${y}" width="${Math.max(0, row.value / max * barWidth)}" height="26" rx="6" fill="#43835b"/><text x="${left + barWidth + 14}" y="${y + 19}" font-size="14" fill="#29483d">${safeLabel(value)}</text>`;
+      }).join("");
+      contents = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#ffffff"/><text x="18" y="34" font-family="Arial,sans-serif" font-size="21" font-weight="700" fill="#29483d">${safeLabel(chart.title)}</text><text x="18" y="58" font-family="Arial,sans-serif" font-size="13" fill="#819188">${safeLabel(`${dashboardScopeLabel} · FY ${dashboardYear}`)}</text><g font-family="Arial,sans-serif">${bars}</g></svg>`;
+      mimeType = "image/svg+xml;charset=utf-8";
+      extension = "svg";
+    }
+    const blobUrl = URL.createObjectURL(new Blob([contents], { type: mimeType }));
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = `${dashboardChartMetric}-fy${dashboardYear}.${extension}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  };
   const loadDatabaseBrowser = async () => {
     if (systemRole !== "superadmin") return;
     setDatabaseLoading(true);
@@ -312,40 +747,107 @@ function App() {
       if (!currentRequest) return;
       setProfile(loadedProfile);
       setSystemRole(loadedProfile.system_role ?? "user");
-      setProfileLoadError(null);
     }).catch((error: unknown) => {
       if (!currentRequest) return;
       setProfile({ id: session.user.id, full_name: session.user.email ?? "User", email: session.user.email ?? "" });
       setSystemRole("user");
-      setProfileLoadError({
-        userId: session.user.id,
-        message: error instanceof Error ? error.message : "Could not load your account role",
-      });
+      setNotice(`Your account profile could not be loaded: ${getDatabaseErrorMessage(error)}`);
+      console.error(error);
     });
     return () => { currentRequest = false; };
   }, [session]);
 
   useEffect(() => {
     if (!databaseConfigured || !session?.user || !program.id) return;
+    let currentRequest = true;
     void loadMembers(program.id).then((loadedMembers) => {
+      if (!currentRequest) return;
       setMembers(loadedMembers);
       setProgramRole(loadedMembers.find((member) => member.user_id === session.user.id)?.role ?? "viewer");
     }).catch((error: unknown) => {
+      if (!currentRequest) return;
       setMembers([]);
       setProgramRole("viewer");
       setNotice(error instanceof Error
         ? `Could not load program permissions: ${error.message}`
         : "Could not load program permissions");
     });
-    void loadAuditLogs(program.id).then(setAuditLogs).catch(() => setAuditLogs([]));
+    void loadAuditLogs(program.id).then((logs) => {
+      if (currentRequest) setAuditLogs(logs);
+    }).catch(() => { if (currentRequest) setAuditLogs([]); });
+    return () => { currentRequest = false; };
   }, [program.id, session]);
 
   useEffect(() => {
     if (!databaseConfigured || !program.id || activeTab !== "finance") return;
-    void loadAnnualAllocations(program.id).then(setAnnualAllocations).catch((error: unknown) => {
+    void loadAnnualAllocations(program.id).then((rows) => {
+      setAnnualAllocations(rows);
+      setAllocationsByProgram((current) => ({ ...current, [program.id]: rows }));
+    }).catch((error: unknown) => {
       setNotice(error instanceof Error ? `Could not load annual allocations: ${error.message}` : "Could not load annual allocations");
     });
   }, [activeTab, program.id]);
+
+  useEffect(() => {
+    if (!databaseConfigured || !program.id || activeTab !== "finance") return;
+    if (financeSheet !== "APP") return;
+    let currentRequest = true;
+    const loadPlan = async () => {
+      await Promise.resolve();
+      if (!currentRequest) return;
+      setProcurementPlanSheet(null);
+      setProcurementPlanItems([]);
+      setProcurementPlanLoading(true);
+      try {
+        const [{ sheet, items }, years] = await Promise.all([
+          loadProcurementPlanSheet(program.id, selectedFiscalYear, financeSheet),
+          loadProcurementPlanYears(program.id),
+        ]);
+        if (!currentRequest) return;
+        setProcurementPlanSheet(sheet);
+        setProcurementPlanItems(items);
+        setProcurementPlanYears(years);
+        setProcurementPlanHeader({
+          is_continuing: sheet?.is_continuing ?? false,
+          plan_status: sheet?.plan_status ?? "Indicative",
+          version_no: sheet?.version_no ?? "",
+        });
+        setProcurementPlanDrafts({});
+      } catch (error) {
+        if (currentRequest) setNotice(error instanceof Error ? `Could not load the FY ${selectedFiscalYear} APP: ${error.message}` : "Could not load the annual procurement plan");
+      } finally {
+        if (currentRequest) setProcurementPlanLoading(false);
+      }
+    };
+    void loadPlan();
+    return () => { currentRequest = false; };
+  }, [activeTab, financeSheet, program.id, selectedFiscalYear]);
+
+  useEffect(() => {
+    if (!databaseConfigured || !programOptions.length) return;
+    let currentRequest = true;
+    const selectedPrograms = systemRole === "superadmin"
+      ? dashboardProgramFilter === "all" ? programOptions : programOptions.filter((item) => item.id === dashboardProgramFilter)
+      : programOptions.filter((item) => item.id === program.id);
+    const loadBudgets = async () => {
+      await Promise.resolve();
+      try {
+        const entries = await Promise.all(selectedPrograms.map(async (item) => {
+          const { items } = await loadProcurementPlanSheet(item.id, dashboardYear, "APP");
+          return [item.id, items.reduce((total, row) => total + Number(row.estimated_budget), 0)] as const;
+        }));
+        if (!currentRequest) return;
+        setDashboardAppBudgetsByProgram((current) => ({
+          ...(systemRole === "superadmin" && dashboardProgramFilter === "all" ? current : {}),
+          ...Object.fromEntries(entries),
+        }));
+      } catch (error) {
+        if (currentRequest) setNotice(error instanceof Error ? `Could not load APP dashboard totals: ${error.message}` : "Could not load APP dashboard totals");
+      }
+    };
+    void loadBudgets();
+    return () => { currentRequest = false; };
+  }, [dashboardProgramFilter, dashboardYear, program.id, programOptions, systemRole]);
 
   useEffect(() => {
     if (!databaseConfigured || !showActivityDialog || !selectedActivityId) return;
@@ -363,6 +865,7 @@ function App() {
     return () => { currentRequest = false; };
   }, [selectedActivityId, showActivityDialog]);
 
+  const canManageFinance = programRole === "program_admin";
   const canEdit = systemRole === "superadmin" || programRole === "program_admin" || programRole === "editor";
   const isAdmin = systemRole === "superadmin" || programRole === "program_admin";
   const handleLogin = async (event: React.FormEvent) => {
@@ -502,6 +1005,8 @@ function App() {
           setProgram(emptyProgramConfig);
           setSteps([]);
           setActivities([]);
+          setActivitiesByProgram({});
+          setAllocationsByProgram({});
           setNotice("No programs are seeded in the online database");
           return;
         }
@@ -510,17 +1015,28 @@ function App() {
           return mapDatabaseProgram(record, recordsSteps.map(mapDatabaseStep));
         }));
         const recordsByProgram = await Promise.all(records.map(async (record) => [record.id, (await loadActivities(record.id)).map((activity) => activity)] as const));
+        const allocationResults = await Promise.all(records.map(async (record) => {
+          try {
+            return [record.id, await loadAnnualAllocations(record.id), null] as const;
+          } catch (error) {
+            return [record.id, [] as AnnualProgramAllocation[], error] as const;
+          }
+        }));
         const first = options[0];
         const firstActivities = recordsByProgram.find(([id]) => id === first.id)?.[1] ?? [];
         if (!mounted) return;
         setProgramOptions(options);
         setProgram(first);
         setSteps(first.steps);
-        setActivities(firstActivities.map((activity) => mapDatabaseActivity(activity, first.steps)));
-        setActivitiesByProgram(Object.fromEntries(recordsByProgram.map(([id, records]) => [id, records.map((activity) => mapDatabaseActivity(activity, options.find((option) => option.id === id)?.steps ?? []))])));
+        setActivities(firstActivities.map((activity) => mapDatabaseActivity(activity, first.steps, first.id)));
+        setActivitiesByProgram(Object.fromEntries(recordsByProgram.map(([id, records]) => [id, records.map((activity) => mapDatabaseActivity(activity, options.find((option) => option.id === id)?.steps ?? [], id))])));
+        setAllocationsByProgram(Object.fromEntries(allocationResults.map(([id, allocations]) => [id, allocations])));
         setSelectedId(first.steps[0]?.id ?? "");
         setSelectedActivityId(firstActivities[0]?.id ?? "");
-        setNotice("Loaded from database");
+        const allocationError = allocationResults.find(([, , error]) => error)?.[2];
+        setNotice(allocationError
+          ? `Loaded activities, but annual financial totals could not be fully loaded: ${allocationError instanceof Error ? allocationError.message : "check allocation access"}`
+          : "Loaded from database");
       } catch (error) {
         if (mounted) setNotice(error instanceof Error ? `Database unavailable: ${error.message}` : "Database unavailable");
         console.error(error);
@@ -529,6 +1045,59 @@ function App() {
     void hydrateFromDatabase();
     return () => { mounted = false; };
   }, [session]);
+
+  useEffect(() => {
+    if (activeTab !== "beneficiaries" || !session?.user.id) return;
+    if (systemRole !== "superadmin" && !program.id) return;
+
+    let mounted = true;
+    const scopeProgramId = systemRole === "superadmin"
+      ? beneficiaryProgramFilter === "all" ? undefined : beneficiaryProgramFilter
+      : program.id;
+    void loadBeneficiaries(scopeProgramId)
+      .then((records) => {
+        if (mounted) {
+          setBeneficiaryRecords(records);
+          setBeneficiaryLoadedScope(scopeProgramId ?? "all");
+        }
+      })
+      .catch((error: unknown) => {
+        if (mounted) {
+          setBeneficiaryRecords([]);
+          setBeneficiaryLoadedScope(scopeProgramId ?? "all");
+          setNotice(`Beneficiary records could not be loaded: ${getDatabaseErrorMessage(error)}`);
+          console.error(error);
+        }
+      });
+    return () => { mounted = false; };
+  }, [activeTab, beneficiaryProgramFilter, program.id, session?.user.id, systemRole]);
+
+  useEffect(() => {
+    if (activeTab !== "calendar" || !databaseConfigured || !session?.user.id || !program.id) {
+      return;
+    }
+
+    let mounted = true;
+    void loadCalendarDayNotes(program.id, calendarDays[0].key, calendarDays[calendarDays.length - 1].key)
+      .then((records) => {
+        if (mounted) {
+          setCalendarDayNotes((current) => ({
+            ...current,
+            ...Object.fromEntries(records.map((record) => [`${record.program_id}:${record.note_date}`, record])),
+          }));
+          setCalendarNotesLoadedScope(calendarNotesScope);
+          setCalendarNotesLoadErrorScope(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (mounted) {
+          setCalendarNotesLoadErrorScope(calendarNotesScope);
+          setNotice(`Calendar notes could not be loaded: ${getDatabaseErrorMessage(error)}`);
+          console.error(error);
+        }
+      });
+    return () => { mounted = false; };
+  }, [activeTab, calendarDays, calendarNotesReloadToken, calendarNotesScope, program.id, session?.user.id]);
 
   const updateProgram = (field: "title" | "acronym" | "agency" | "office" | "description" | "beneficiaries" | "units" | "primary" | "accent" | "logo", value: string) => {
     if (!isAdmin) return;
@@ -700,27 +1269,35 @@ function App() {
   const selectProgram = (id: string) => {
     const nextProgram = programOptions.find((item) => item.id === id);
     if (!nextProgram) return;
+    setDashboardProgramFilter(id);
+    setProgramRole("viewer");
     setAnnualAllocations([]);
+    setProcurementPlanItems([]);
+    setProcurementPlanSheet(null);
+    setProcurementPlanYears([]);
+    setProcurementPlanDrafts({});
     if (databaseConfigured) {
       void (async () => {
         try {
           const recordsSteps = (await loadWorkflowSteps(id)).map(mapDatabaseStep);
-          const recordsActivities = await loadActivities(id);
+          const [recordsActivities, recordsAllocations] = await Promise.all([loadActivities(id), loadAnnualAllocations(id)]);
           const databaseProgram = { ...nextProgram, steps: recordsSteps };
           setProgram(databaseProgram);
           setSteps(recordsSteps);
-          setActivities(recordsActivities.map((activity) => mapDatabaseActivity(activity, recordsSteps)));
+          setActivities(recordsActivities.map((activity) => mapDatabaseActivity(activity, recordsSteps, id)));
+          setAnnualAllocations(recordsAllocations);
+          setAllocationsByProgram((current) => ({ ...current, [id]: recordsAllocations }));
           setSelectedId(recordsSteps[0]?.id ?? "");
           setSelectedActivityId(recordsActivities[0]?.id ?? "");
           setActivitiesByProgram((current) => ({
             ...current,
-            [id]: recordsActivities.map((activity) => mapDatabaseActivity(activity, recordsSteps)),
+            [id]: recordsActivities.map((activity) => mapDatabaseActivity(activity, recordsSteps, id)),
           }));
           setNotice(`${databaseProgram.acronym} workspace opened`);
           return;
         } catch (error) {
           console.error(error);
-          setNotice("Could not load the selected program");
+          setNotice(`Could not load ${nextProgram.acronym} financial records: ${getDatabaseErrorMessage(error)}`);
         }
       })();
       return;
@@ -733,11 +1310,20 @@ function App() {
     setActiveTab("finance");
   };
   const saveActivity = async () => {
+    if (!editingActivityId) {
+      setNotice("Create activities by saving their projects in Finance → APP.");
+      return;
+    }
+    const existingActivity = activities.find((item) => item.id === editingActivityId);
+    if (!existingActivity) {
+      setNotice("The activity being edited is no longer available. Refresh the activity register and try again.");
+      return;
+    }
     if (!newActivity.name.trim()) {
       setNotice("Activity name is required");
       return;
     }
-    if (!newActivity.startDate) {
+    if (!newActivity.startDate && !existingActivity.fiscalYear) {
       setNotice("Activity start date is required");
       return;
     }
@@ -745,37 +1331,34 @@ function App() {
       setNotice("Target end date must be after the start date");
       return;
     }
-    if (!activeSteps.length) {
-      setNotice("Add at least one workflow step before creating an activity");
-      return;
-    }
-    const budget = Number(newActivity.budget) || 0;
-    const spent = Number(newActivity.spent) || 0;
+    const budget = canManageFinance ? Number(newActivity.budget) || 0 : existingActivity.budget;
+    const spent = canManageFinance ? Number(newActivity.spent) || 0 : existingActivity.spent;
     if (budget < 0 || spent < 0 || spent > budget) {
-      setNotice("Spending must be between zero and the approved budget");
+      setNotice("Obligations must be between zero and the approved activity budget");
       return;
     }
     const activity: Activity = {
-      id: `${program.id}-act-${Date.now()}`,
+      ...existingActivity,
       name: newActivity.name.trim(),
-      location: newActivity.location || "Regional activity",
+      location: newActivity.location.trim(),
       startDate: newActivity.startDate,
       endDate: newActivity.endDate,
+      fiscalYear: newActivity.startDate ? Number(newActivity.startDate.slice(0, 4)) : existingActivity.fiscalYear,
       budget,
       spent,
       activityDesign: newActivity.activityDesign.trim(),
       status: getActivityStatus(steps, newActivity.currentStep || steps[0]?.title || "Activity Planning", newActivity.currentSubStep || ""),
       currentStep: newActivity.currentStep || steps[0]?.title || "Activity Planning",
       currentSubStep: newActivity.currentSubStep || steps.find((step) => step.title === (newActivity.currentStep || steps[0]?.title))?.subSteps?.[0] || "",
-      stepRemarks: editingActivityId ? activities.find((item) => item.id === editingActivityId)?.stepRemarks ?? {} : {},
     };
     try {
       const currentStepId = steps.find((step) => step.title === activity.currentStep)?.id ?? null;
       const databaseValues = {
         title: activity.name,
-        location: activity.location,
-        start_date: activity.startDate,
-        target_end_date: activity.endDate,
+        location: activity.location || null,
+        start_date: activity.startDate || null,
+        target_end_date: activity.endDate || null,
+        fiscal_year: activity.fiscalYear ?? null,
         approved_budget: activity.budget,
         recorded_spending: activity.spent,
         status: activity.status,
@@ -785,19 +1368,14 @@ function App() {
         activity_design: activity.activityDesign ?? "",
         completed_sub_steps: activity.completedSubSteps ?? {},
       };
-      if (editingActivityId) {
-        await updateDatabaseActivity(editingActivityId, databaseValues);
-        setActivities((current) => current.map((item) => item.id === editingActivityId ? { ...activity, id: editingActivityId } : item));
-        setSelectedActivityId(editingActivityId);
-        setNotice("Activity updated in the online database");
-      } else {
-        const created = await createDatabaseActivity({ program_id: program.id, activity_code: `ACT-${Date.now()}`, ...databaseValues });
-        const savedActivity = mapDatabaseActivity(created, steps);
-        setActivities((current) => [savedActivity, ...current]);
-        setActivitiesByProgram((current) => ({ ...current, [program.id]: [savedActivity, ...(current[program.id] ?? [])] }));
-        setSelectedActivityId(created.id);
-        setNotice("Activity saved to the online database");
-      }
+      await updateDatabaseActivity(editingActivityId, databaseValues);
+      setActivities((current) => current.map((item) => item.id === editingActivityId ? activity : item));
+      setActivitiesByProgram((current) => ({
+        ...current,
+        [program.id]: (current[program.id] ?? []).map((item) => item.id === editingActivityId ? activity : item),
+      }));
+      setSelectedActivityId(editingActivityId);
+      setNotice("Activity updated in the online database");
     } catch (error) {
       setNotice(`Activity was not saved: ${getDatabaseErrorMessage(error)}`);
       return;
@@ -819,6 +1397,10 @@ function App() {
     setSaved(false);
   };
   const editActivity = (activity: Activity) => {
+    if (activity.activityCode.startsWith("APP-")) {
+      setNotice("Edit this activity's title, schedule, or budget in Finance → APP.");
+      return;
+    }
     setEditingActivityId(activity.id);
     setNewActivity({
       name: activity.name,
@@ -834,9 +1416,15 @@ function App() {
     });
     setActivityDialogTab("workflow");
     setShowActivityDialog(false);
+    setActiveTab("activities");
     setShowActivityForm(true);
   };
   const deleteActivity = async (id: string) => {
+    const activity = activities.find((item) => item.id === id);
+    if (activity?.activityCode.startsWith("APP-")) {
+      setNotice("APP-linked activities cannot be deleted here. Remove the project from Finance → APP instead.");
+      return;
+    }
     try {
       await deleteDatabaseActivity(id);
       setActivities((current) => current.filter((activity) => activity.id !== id));
@@ -850,6 +1438,24 @@ function App() {
   const selectedActivity =
     activities.find((activity) => activity.id === selectedActivityId) ??
     activities[0];
+  const beneficiaryScopeKey = systemRole === "superadmin" ? beneficiaryProgramFilter : program.id;
+  const beneficiaryTableLoading = Boolean(beneficiaryScopeKey) && beneficiaryLoadedScope !== beneficiaryScopeKey;
+  const visibleBeneficiaryRecords = beneficiaryTableLoading || !beneficiaryScopeKey ? [] : beneficiaryRecords;
+  const filteredBeneficiaryRecords = visibleBeneficiaryRecords.filter((record) => {
+    const query = beneficiarySearch.trim().toLowerCase();
+    if (!query) return true;
+    const programName = programOptions.find((option) => option.id === record.program_id)?.title ?? "";
+    const activityName = (activitiesByProgram[record.program_id] ?? []).find((activity) => activity.id === record.activity_id)?.name ?? "";
+    return [
+      record.beneficiary_name,
+      record.beneficiary_code,
+      record.municipality,
+      record.barangay,
+      record.assistance_received,
+      programName,
+      activityName,
+    ].some((value) => value?.toLowerCase().includes(query));
+  });
   const filteredActivities = activities.filter((activity) => {
     const query = activitySearch.trim().toLowerCase();
     if (!query) return true;
@@ -858,7 +1464,6 @@ function App() {
       .toLowerCase()
       .includes(query);
   });
-  const selectedActivityStep = steps.find((step) => step.title === selectedActivity?.currentStep);
   const saveActivityChanges = async () => {
     if (!selectedActivity) return;
     const stepRemarks = { ...(selectedActivity.stepRemarks ?? {}) };
@@ -893,61 +1498,418 @@ function App() {
       setNotice(`Activity design was not saved: ${getDatabaseErrorMessage(error)}`);
     }
   };
-  const saveAllocation = async () => {
-    const appropriation = Number(allocationDraft.appropriation) || 0;
-    const allotment_received = Number(allocationDraft.allotment_received) || 0;
-    const obligations = Number(allocationDraft.obligations) || 0;
-    const disbursements = Number(allocationDraft.disbursements) || 0;
-    const supplementalAmounts = [allocationDraft.accounts_payable, allocationDraft.cash_advances, allocationDraft.liquidation, allocationDraft.savings].map((value) => Number(value) || 0);
-    if (!allocationDraft.fund_source.trim() || [appropriation, allotment_received, obligations, disbursements, ...supplementalAmounts].some((amount) => !Number.isFinite(amount) || amount < 0)) {
-      setNotice("Enter a fund source and non-negative financial amounts");
+  const saveCalendarNoteDraft = async () => {
+    if (!calendarDialogDay || !program.id || !canEdit || !session?.user.id) return;
+    const noteKey = `${program.id}:${calendarDialogDay}`;
+    const noteDraft = calendarNoteDrafts[noteKey] ?? calendarDayNotes[noteKey]?.note ?? "";
+    if (noteDraft.trim().length > 4000) {
+      setNotice("Calendar notes must be 4,000 characters or fewer");
       return;
     }
-    if (allotment_received > appropriation || obligations > allotment_received || disbursements > obligations) {
-      setNotice("Check the financial ceilings: allotments cannot exceed appropriation, obligations cannot exceed allotment, and disbursements cannot exceed obligations");
-      return;
-    }
-    setAllocationSaving(true);
+    setCalendarNoteSaving(true);
     try {
-      const savedAllocation = await saveAnnualAllocation({
-        id: editingAllocationId ?? undefined,
-        program_id: program.id,
-        fiscal_year: selectedFiscalYear,
-        fund_source: allocationDraft.fund_source.trim(),
-        allotment_reference: allocationDraft.allotment_reference.trim() || null,
-        obligation_reference: allocationDraft.obligation_reference.trim() || null,
-        disbursement_reference: allocationDraft.disbursement_reference.trim() || null,
-        appropriation,
-        allotment_received,
-        obligations,
-        disbursements,
-        accounts_payable: Number(allocationDraft.accounts_payable) || 0,
-        cash_advances: Number(allocationDraft.cash_advances) || 0,
-        liquidation: Number(allocationDraft.liquidation) || 0,
-        savings: Number(allocationDraft.savings) || 0,
-        remarks: allocationDraft.remarks.trim() || null,
+      const note = await saveCalendarDayNote(program.id, calendarDialogDay, noteDraft);
+      setCalendarDayNotes((current) => {
+        const next = { ...current };
+        if (note) next[noteKey] = note;
+        else delete next[noteKey];
+        return next;
       });
-      setAnnualAllocations((current) => [...current.filter((row) => row.id !== savedAllocation.id), savedAllocation].sort((a, b) => b.fiscal_year - a.fiscal_year || a.fund_source.localeCompare(b.fund_source)));
-      setEditingAllocationId(null);
-      setAllocationDraft(createEmptyAllocationDraft());
-      setShowAllocationForm(false);
-      setNotice("Annual financial allocation saved to the database");
+      setCalendarNoteDrafts((current) => ({ ...current, [noteKey]: note?.note ?? "" }));
+      setNotice(note ? "Day note saved" : "Day note removed");
     } catch (error) {
-      setNotice(`Annual allocation was not saved: ${getDatabaseErrorMessage(error)}`);
+      setNotice(`Day note was not saved: ${getDatabaseErrorMessage(error)}`);
     } finally {
-      setAllocationSaving(false);
+      setCalendarNoteSaving(false);
+    }
+  };
+  const editCalendarSchedule = (activity: Activity) => {
+    const isAppSchedule = activity.activityCode.startsWith("APP-");
+    if (!canEdit || (isAppSchedule && !isAdmin)) return;
+    setCalendarScheduleEditingId(activity.id);
+    setCalendarScheduleDraft({
+      startDate: isAppSchedule ? activity.startDate.slice(0, 7) : activity.startDate,
+      endDate: isAppSchedule ? activity.endDate.slice(0, 7) : activity.endDate,
+      isAppSchedule,
+    });
+  };
+  const saveCalendarSchedule = async (activity: Activity) => {
+    if (!calendarScheduleDraft || !canEdit || !program.id || (activity.activityCode.startsWith("APP-") && !isAdmin)) return;
+    const { startDate: draftStart, endDate: draftEnd, isAppSchedule } = calendarScheduleDraft;
+    if (!draftStart) {
+      setNotice("An activity start date is required");
+      return;
+    }
+    if (draftEnd && draftEnd < draftStart) {
+      setNotice("The activity end date must be on or after its start date");
+      return;
+    }
+    const startDate = isAppSchedule ? `${draftStart}-01` : draftStart;
+    const endDate = draftEnd ? (isAppSchedule ? `${draftEnd}-01` : draftEnd) : "";
+    setCalendarScheduleSaving(true);
+    try {
+      await saveCalendarActivitySchedule(activity.id, program.id, startDate, endDate);
+      const updatedActivity = { ...activity, startDate, endDate, fiscalYear: isAppSchedule ? activity.fiscalYear : Number(startDate.slice(0, 4)) };
+      setActivities((current) => current.map((item) => item.id === activity.id ? updatedActivity : item));
+      setActivitiesByProgram((current) => ({
+        ...current,
+        [program.id]: (current[program.id] ?? []).map((item) => item.id === activity.id ? updatedActivity : item),
+      }));
+      setCalendarScheduleEditingId(null);
+      setCalendarScheduleDraft(null);
+      setNotice("Activity schedule saved");
+    } catch (error) {
+      setNotice(`Activity schedule was not saved: ${getDatabaseErrorMessage(error)}`);
+    } finally {
+      setCalendarScheduleSaving(false);
+    }
+  };
+  const allocationRowDraftKey = (row: AnnualProgramAllocation | null) => row?.id ?? `new:${program.id}:${selectedFiscalYear}`;
+  const updateAllocationRowDraft = (row: AnnualProgramAllocation | null, field: keyof AllocationDraft, value: string) => {
+    const key = allocationRowDraftKey(row);
+    setAllocationRowDrafts((current) => ({
+      ...current,
+      [key]: { ...(current[key] ?? (row ? allocationToDraft(row) : createEmptyAllocationDraft())), [field]: value },
+    }));
+  };
+  const saveAllocationRow = async (row: AnnualProgramAllocation | null) => {
+    if (!canManageFinance) {
+      setNotice("Only this program's program admin can edit financial records");
+      return;
+    }
+    const rowKey = allocationRowDraftKey(row);
+    const draft = allocationRowDrafts[rowKey] ?? (row ? allocationToDraft(row) : createEmptyAllocationDraft());
+    const numberFields: Array<keyof Pick<AllocationDraft, "appropriation" | "allotment_received" | "disbursements" | "accounts_payable" | "cash_advances" | "liquidation" | "savings">> = [
+      "appropriation", "allotment_received", "disbursements",
+      "accounts_payable", "cash_advances", "liquidation", "savings",
+    ];
+    const amounts = Object.fromEntries(numberFields.map((field) => [field, Number(draft[field])])) as Record<typeof numberFields[number], number>;
+    if (!draft.fund_source.trim() || numberFields.some((field) => !Number.isFinite(amounts[field]) || amounts[field] < 0)) {
+      setNotice("Enter a fund source and valid non-negative amounts");
+      return;
+    }
+    if (amounts.allotment_received > amounts.appropriation || amounts.disbursements > amounts.allotment_received) {
+      setNotice("Check the financial ceilings: allotments and disbursements cannot exceed the appropriation and received allotment");
+      return;
+    }
+    setAllocationRowSavingId(rowKey);
+    try {
+      const savedRow = await saveAnnualAllocation({
+        id: row?.id,
+        program_id: row?.program_id ?? program.id,
+        fiscal_year: row?.fiscal_year ?? selectedFiscalYear,
+        fund_source: draft.fund_source.trim(),
+        allotment_reference: draft.allotment_reference.trim() || null,
+        obligation_reference: row?.obligation_reference ?? null,
+        disbursement_reference: draft.disbursement_reference.trim() || null,
+        appropriation: amounts.appropriation,
+        allotment_received: amounts.allotment_received,
+        obligations: row?.obligations ?? 0,
+        disbursements: amounts.disbursements,
+        accounts_payable: amounts.accounts_payable,
+        cash_advances: amounts.cash_advances,
+        liquidation: amounts.liquidation,
+        savings: amounts.savings,
+        remarks: draft.remarks.trim() || null,
+      });
+      setAnnualAllocations((current) => [...current.filter((item) => item.id !== savedRow.id), savedRow].sort((a, b) => b.fiscal_year - a.fiscal_year || a.fund_source.localeCompare(b.fund_source)));
+      setAllocationsByProgram((current) => ({
+        ...current,
+        [savedRow.program_id]: [...(current[savedRow.program_id] ?? []).filter((item) => item.id !== savedRow.id), savedRow].sort((a, b) => b.fiscal_year - a.fiscal_year || a.fund_source.localeCompare(b.fund_source)),
+      }));
+      setAllocationRowDrafts((current) => {
+        const next = { ...current };
+        delete next[rowKey];
+        return next;
+      });
+      setNotice(`FY ${savedRow.fiscal_year} allocation row saved`);
+    } catch (error) {
+      setNotice(`Allocation row was not saved: ${getDatabaseErrorMessage(error)}`);
+    } finally {
+      setAllocationRowSavingId(null);
     }
   };
   const removeAllocation = async (id: string) => {
+    if (!canManageFinance) {
+      setNotice("Only this program's program admin can edit financial records");
+      return;
+    }
     try {
       await deleteAnnualAllocation(id);
       setAnnualAllocations((current) => current.filter((row) => row.id !== id));
+      setAllocationsByProgram((current) => ({
+        ...current,
+        [program.id]: (current[program.id] ?? []).filter((row) => row.id !== id),
+      }));
+      setAllocationRowDrafts((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
       setNotice("Annual allocation deleted");
     } catch (error) {
       setNotice(`Could not delete allocation: ${getDatabaseErrorMessage(error)}`);
     }
   };
+  const procurementPlanRowKey = (row: ProcurementPlanItem | null) => row?.id ?? `new:${program.id}:${selectedFiscalYear}:APP`;
+  const refreshProgramActivities = async () => {
+    const records = await loadActivities(program.id);
+    const mapped = records.map((activity) => mapDatabaseActivity(activity, steps, program.id));
+    setActivities(mapped);
+    setActivitiesByProgram((current) => ({ ...current, [program.id]: mapped }));
+  };
+  const updateProcurementPlanDraft = (row: ProcurementPlanItem | null, field: keyof AppPlanRowDraft, value: string | boolean) => {
+    const key = procurementPlanRowKey(row);
+    setProcurementPlanDrafts((current) => ({
+      ...current,
+      [key]: { ...(current[key] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft())), [field]: value },
+    }));
+  };
+  const saveProcurementPlanHeader = async () => {
+    if (!canManageFinance) {
+      setNotice("Only this program's program admin can edit financial records");
+      return;
+    }
+    try {
+      const sheet = await saveProcurementPlanSheet({
+        program_id: program.id,
+        fiscal_year: selectedFiscalYear,
+        plan_type: "APP",
+        ...procurementPlanHeader,
+      });
+      setProcurementPlanSheet(sheet);
+      setProcurementPlanYears((current) => Array.from(new Set([selectedFiscalYear, ...current])).sort((a, b) => b - a));
+      setNotice(`FY ${selectedFiscalYear} APP details saved`);
+    } catch (error) {
+      setNotice(`APP details were not saved: ${getDatabaseErrorMessage(error)}`);
+    }
+  };
+  const saveProcurementPlanRow = async (row: ProcurementPlanItem | null) => {
+    if (!canManageFinance) {
+      setNotice("Only this program's program admin can edit financial records");
+      return;
+    }
+    const rowKey = procurementPlanRowKey(row);
+    const draft = procurementPlanDrafts[rowKey] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft());
+    const estimatedBudget = Number(draft.estimated_budget);
+    if (!draft.project_title.trim() || !draft.implementing_unit.trim() || !Number.isFinite(estimatedBudget) || estimatedBudget < 0) {
+      setNotice("Enter a project title, implementing unit, and a valid non-negative estimated budget");
+      return;
+    }
+    const startDate = draft.procurement_start ? `${draft.procurement_start}-01` : null;
+    const endDate = draft.procurement_end ? `${draft.procurement_end}-01` : null;
+    if (startDate && endDate && startDate > endDate) {
+      setNotice("The procurement end month must be the same as or later than the start month");
+      return;
+    }
+    setProcurementPlanSavingId(rowKey);
+    try {
+      const sheet = await saveProcurementPlanSheet({
+        program_id: program.id,
+        fiscal_year: selectedFiscalYear,
+        plan_type: "APP",
+        ...procurementPlanHeader,
+      });
+      const savedRow = await saveProcurementPlanItem({
+        id: row?.id,
+        plan_id: sheet.id,
+        project_title: draft.project_title.trim(),
+        implementing_unit: draft.implementing_unit.trim(),
+        project_description: draft.project_description.trim(),
+        procurement_mode: draft.procurement_mode.trim(),
+        early_procurement_activity: draft.early_procurement_activity,
+        bid_evaluation_criteria: draft.bid_evaluation_criteria.trim(),
+        procurement_start: startDate,
+        procurement_end: endDate,
+        source_of_fund: draft.source_of_fund.trim(),
+        estimated_budget: estimatedBudget,
+        procurement_strategy: draft.procurement_strategy.trim(),
+        remarks: draft.remarks.trim(),
+      });
+      setProcurementPlanSheet(sheet);
+      setProcurementPlanYears((current) => Array.from(new Set([selectedFiscalYear, ...current])).sort((a, b) => b - a));
+      setProcurementPlanItems((current) => [...current.filter((item) => item.id !== savedRow.id), savedRow].sort((a, b) => a.created_at.localeCompare(b.created_at)));
+      setProcurementPlanDrafts((current) => {
+        const next = { ...current };
+        delete next[rowKey];
+        return next;
+      });
+      setNotice(`FY ${selectedFiscalYear} APP project saved`);
+      try {
+        await refreshProgramActivities();
+      } catch (error) {
+        setNotice(`APP project saved, but its activity could not be refreshed: ${getDatabaseErrorMessage(error)}`);
+      }
+    } catch (error) {
+      setNotice(`APP project was not saved: ${getDatabaseErrorMessage(error)}`);
+    } finally {
+      setProcurementPlanSavingId(null);
+    }
+  };
+  const deleteProcurementPlanRow = async (row: ProcurementPlanItem) => {
+    if (!canManageFinance) {
+      setNotice("Only this program's program admin can edit financial records");
+      return;
+    }
+    try {
+      await deleteProcurementPlanItem(row.id);
+      setProcurementPlanItems((current) => current.filter((item) => item.id !== row.id));
+      setProcurementPlanDrafts((current) => {
+        const next = { ...current };
+        delete next[row.id];
+        return next;
+      });
+      setNotice(`FY ${selectedFiscalYear} APP project removed`);
+    } catch (error) {
+      setNotice(`APP project was not deleted: ${getDatabaseErrorMessage(error)}`);
+    }
+  };
+  const exportAppPlanCsv = () => {
+    const csvCell = (value: string) => `"${value.replace(/"/g, '""')}"`;
+    const lines = [
+      appPlanCsvColumns.map(([key]) => csvCell(key)).join(","),
+      ...procurementPlanItems.map((item) => appPlanCsvColumns.map(([key]) => {
+        const value = item[key];
+        if (key === "early_procurement_activity") return csvCell(value ? "Yes" : "No");
+        if (key === "procurement_start" || key === "procurement_end") return csvCell(String(value ?? "").slice(0, 7));
+        return csvCell(String(value ?? ""));
+      }).join(",")),
+    ];
+    const blobUrl = URL.createObjectURL(new Blob([`\uFEFF${lines.join("\r\n")}`], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = blobUrl;
+    anchor.download = `${program.acronym}-APP-FY${selectedFiscalYear}.csv`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+  };
+  const importAppPlanCsv = async (file: File) => {
+    if (!canManageFinance) {
+      setNotice("Only this program's program admin can import APP records");
+      return;
+    }
+    setProcurementPlanImporting(true);
+    let importedCount = 0;
+    try {
+      const rows = parseCsv(await file.text());
+      if (rows.length < 2) throw new Error("Choose a CSV file with a header row and at least one project.");
+      const normalizedHeaders = rows[0].map((header) => header.trim().toLowerCase());
+      const columnIndexes = appPlanCsvColumns.map(([key, label]) => {
+        const aliases = [key.toLowerCase(), label.toLowerCase()];
+        return normalizedHeaders.findIndex((header) => aliases.includes(header));
+      });
+      const missingColumns = appPlanCsvColumns.filter((_, index) => columnIndexes[index] < 0).map((column) => column[1]);
+      if (missingColumns.length) throw new Error(`CSV is missing required APP columns: ${missingColumns.join(", ")}`);
+      const parseMonth = (value: string, label: string) => {
+        if (!value.trim()) return null;
+        const match = /^(\d{4})-(\d{2})(?:-\d{2})?$/.exec(value.trim());
+        if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) throw new Error(`${label} must use YYYY-MM format.`);
+        return `${match[1]}-${match[2]}-01`;
+      };
+      const importedDrafts = rows.slice(1).map((values, rowIndex): AppPlanRowDraft => {
+        const getValue = (column: number) => values[columnIndexes[column]]?.trim() ?? "";
+        const budgetValue = getValue(9);
+        const budget = Number(budgetValue);
+        const earlyActivity = getValue(4).toLowerCase();
+        if (!getValue(0) || !getValue(1) || !budgetValue || !Number.isFinite(budget) || budget < 0) {
+          throw new Error(`CSV row ${rowIndex + 2} needs a project title, implementing unit, and valid non-negative budget.`);
+        }
+        if (!["yes", "no", "true", "false", "1", "0"].includes(earlyActivity.toLowerCase())) {
+          throw new Error(`CSV row ${rowIndex + 2} has an invalid early procurement activity value; use Yes or No.`);
+        }
+        const start = parseMonth(getValue(6), `CSV row ${rowIndex + 2} procurement start`);
+        const end = parseMonth(getValue(7), `CSV row ${rowIndex + 2} procurement end`);
+        if (start && end && start > end) throw new Error(`CSV row ${rowIndex + 2} has an end month before its start month.`);
+        return {
+          project_title: getValue(0),
+          implementing_unit: getValue(1),
+          project_description: getValue(2),
+          procurement_mode: getValue(3),
+          early_procurement_activity: ["yes", "true", "1"].includes(earlyActivity),
+          bid_evaluation_criteria: getValue(5),
+          procurement_start: start?.slice(0, 7) ?? "",
+          procurement_end: end?.slice(0, 7) ?? "",
+          source_of_fund: getValue(8),
+          estimated_budget: String(budget),
+          procurement_strategy: getValue(10),
+          remarks: getValue(11),
+        };
+      });
+      const sheet = await saveProcurementPlanSheet({
+        program_id: program.id,
+        fiscal_year: selectedFiscalYear,
+        plan_type: "APP",
+        ...procurementPlanHeader,
+      });
+      setProcurementPlanSheet(sheet);
+      for (const draft of importedDrafts) {
+        const savedItem = await saveProcurementPlanItem({
+          plan_id: sheet.id,
+          project_title: draft.project_title,
+          implementing_unit: draft.implementing_unit,
+          project_description: draft.project_description,
+          procurement_mode: draft.procurement_mode,
+          early_procurement_activity: draft.early_procurement_activity,
+          bid_evaluation_criteria: draft.bid_evaluation_criteria,
+          procurement_start: draft.procurement_start ? `${draft.procurement_start}-01` : null,
+          procurement_end: draft.procurement_end ? `${draft.procurement_end}-01` : null,
+          source_of_fund: draft.source_of_fund,
+          estimated_budget: Number(draft.estimated_budget),
+          procurement_strategy: draft.procurement_strategy,
+          remarks: draft.remarks,
+        });
+        importedCount += 1;
+        setProcurementPlanItems((current) => [...current, savedItem].sort((a, b) => a.created_at.localeCompare(b.created_at)));
+      }
+      setProcurementPlanYears((current) => Array.from(new Set([selectedFiscalYear, ...current])).sort((a, b) => b - a));
+      setNotice(`Imported ${importedCount} APP project${importedCount === 1 ? "" : "s"} into FY ${selectedFiscalYear}. Existing rows were kept.`);
+      try {
+        await refreshProgramActivities();
+      } catch (error) {
+        setNotice(`Imported ${importedCount} APP project${importedCount === 1 ? "" : "s"}, but linked activities could not be refreshed: ${getDatabaseErrorMessage(error)}`);
+      }
+    } catch (error) {
+      const reason = getDatabaseErrorMessage(error);
+      setNotice(importedCount
+        ? `Imported ${importedCount} project${importedCount === 1 ? "" : "s"} before the import stopped: ${reason}`
+        : `APP import failed: ${reason}`);
+    } finally {
+      setProcurementPlanImporting(false);
+    }
+  };
+  const appPlanResizeHandle = (index: number) => (
+    <span
+      className="finance-column-resize-handle"
+      role="separator"
+      aria-label={`Resize APP column ${index + 1}`}
+      aria-orientation="vertical"
+      aria-valuenow={appPlanColumnWidths[index] ?? 160}
+      tabIndex={0}
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setAppColumnResize({ index, startX: event.clientX, startWidth: appPlanColumnWidths[index] ?? 160 });
+      }}
+      onPointerMove={(event) => {
+        if (appColumnResize?.index !== index) return;
+        const width = Math.max(120, appColumnResize.startWidth + event.clientX - appColumnResize.startX);
+        setAppPlanColumnWidths((current) => current.map((currentWidth, columnIndex) => columnIndex === index ? width : currentWidth));
+      }}
+      onPointerUp={() => setAppColumnResize(null)}
+      onPointerCancel={() => setAppColumnResize(null)}
+      onKeyDown={(event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        const change = event.key === "ArrowRight" ? 16 : -16;
+        setAppPlanColumnWidths((current) => current.map((width, columnIndex) => columnIndex === index ? Math.max(120, width + change) : width));
+      }}
+    />
+  );
   const addProcurementItem = async () => {
+    if (!canManageFinance) {
+      setNotice("Only this program's program admin can edit procurement financial records");
+      return;
+    }
     if (!selectedActivity || !procurementDraft.category.trim() || !procurementDraft.item_description.trim() || !procurementDraft.supplier_name.trim() || !procurementDraft.procurement_method.trim() || !procurementDraft.unit.trim()) {
       setNotice("Enter the category, item/service, supplier, procurement method, and unit");
       return;
@@ -979,6 +1941,10 @@ function App() {
     }
   };
   const removeProcurementItem = async (item: ProcurementItem) => {
+    if (!canManageFinance) {
+      setNotice("Only this program's program admin can edit procurement financial records");
+      return;
+    }
     try {
       await deleteProcurementItem(item.id);
       setProcurementItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
@@ -997,10 +1963,10 @@ function App() {
         <article className="procurement-item" key={item.id}>
           <div><span className="procurement-category">{item.category}</span><h4>{item.item_description}</h4><p>{item.supplier_name} · {item.procurement_method}</p><small>{item.purchase_order_number ? `PO ${item.purchase_order_number} · ` : ""}{item.delivery_status}{item.delivery_date ? ` · ${item.delivery_date}` : ""}</small></div>
           <div className="procurement-item-amount"><strong>₱{(Number(item.quantity) * Number(item.unit_cost)).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong><small>{Number(item.quantity).toLocaleString()} {item.unit} × ₱{Number(item.unit_cost).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</small></div>
-          {canEdit && <div className="finance-row-actions"><button className="button secondary" onClick={() => { setEditingProcurementItemId(item.id); setProcurementDraft({ category: item.category, item_description: item.item_description, supplier_name: item.supplier_name, procurement_method: item.procurement_method, purchase_order_number: item.purchase_order_number ?? "", quantity: Number(item.quantity), unit: item.unit, unit_cost: Number(item.unit_cost), delivery_status: item.delivery_status, delivery_date: item.delivery_date }); }}>Edit</button><button className="icon-button danger" aria-label={`Delete procurement item from ${item.supplier_name}`} onClick={() => void removeProcurementItem(item)}><Trash2 size={15} /></button></div>}
+          {canManageFinance && <div className="finance-row-actions"><button className="button secondary" onClick={() => { setEditingProcurementItemId(item.id); setProcurementDraft({ category: item.category, item_description: item.item_description, supplier_name: item.supplier_name, procurement_method: item.procurement_method, purchase_order_number: item.purchase_order_number ?? "", quantity: Number(item.quantity), unit: item.unit, unit_cost: Number(item.unit_cost), delivery_status: item.delivery_status, delivery_date: item.delivery_date }); }}>Edit</button><button className="icon-button danger" aria-label={`Delete procurement item from ${item.supplier_name}`} onClick={() => void removeProcurementItem(item)}><Trash2 size={15} /></button></div>}
         </article>
       ))}</div> : <div className="empty-state">No procurement suppliers recorded for this activity.</div>}
-      {canEdit && <section className="procurement-form">
+      {canManageFinance && <section className="procurement-form">
         <h4>Add goods, services, or supplier</h4>
         <div className="procurement-form-grid">
           <label>Category<input list="procurement-categories" value={procurementDraft.category} onChange={(event) => setProcurementDraft({ ...procurementDraft, category: event.target.value })} /><datalist id="procurement-categories"><option value="Food and catering" /><option value="Venue and lodging" /><option value="Transport and freight" /><option value="Training and professional services" /><option value="Farm inputs and materials" /><option value="Equipment and supplies" /><option value="Other goods or services" /></datalist></label>
@@ -1022,24 +1988,33 @@ function App() {
     const key = `${activityId}:${stepId}`;
     setExpandedTimelineSteps((current) => ({ ...current, [key]: !(current[key] ?? defaultExpanded) }));
   };
-  const getCompletedSubSteps = (activity: Activity, step: WorkflowStep, stepIndex: number) => {
+  const getCompletedSubSteps = (activity: Activity, step: WorkflowStep, stepIndex: number, workflow = activeSteps) => {
     const explicit = activity.completedSubSteps?.[step.id];
-    if (explicit) return explicit;
-    const currentStepIndex = activeSteps.findIndex((item) => item.title === activity.currentStep);
-    const currentSubStepIndex = (activeSteps[currentStepIndex]?.subSteps ?? []).indexOf(activity.currentSubStep ?? "");
+    if (explicit) return Array.from(new Set(explicit.filter((item) => (step.subSteps ?? []).includes(item))));
+    const currentStepIndex = workflow.findIndex((item) => item.title === activity.currentStep);
+    const currentSubStepIndex = (workflow[currentStepIndex]?.subSteps ?? []).indexOf(activity.currentSubStep ?? "");
     if (stepIndex < currentStepIndex) return step.subSteps ?? [];
     if (stepIndex === currentStepIndex && currentSubStepIndex >= 0) return (step.subSteps ?? []).slice(0, currentSubStepIndex + 1);
     return [];
   };
-  const getActivityProgress = (activity: Activity) => {
-    const workflowSteps = activeSteps;
-    const totalSubSteps = workflowSteps.reduce((total, step) => total + (step.subSteps?.length ?? 0), 0);
-    if (totalSubSteps > 0) {
-      const completedSubSteps = workflowSteps.reduce((total, step, index) => total + getCompletedSubSteps(activity, step, index).length, 0);
-      return Math.round(Math.min(1, completedSubSteps / totalSubSteps) * 100);
-    }
+  const getActivityProgressForWorkflow = (activity: Activity, workflow: WorkflowStep[]) => {
+    const workflowSteps = workflow.filter((step) => step.active);
+    if (!workflowSteps.length) return activity.status === "Completed" ? 100 : 0;
+    if (activity.status === "Completed") return 100;
+
     const currentStepIndex = workflowSteps.findIndex((step) => step.title === activity.currentStep);
-    return activity.status === "Completed" ? 100 : Math.round(Math.max(0, currentStepIndex) / Math.max(1, workflowSteps.length) * 100);
+    const totalUnits = workflowSteps.reduce((total, step) => total + Math.max(1, step.subSteps?.length ?? 0), 0);
+    const completedUnits = workflowSteps.reduce((total, step, index) => {
+      const subSteps = step.subSteps ?? [];
+      if (!subSteps.length) return total + (currentStepIndex > index ? 1 : 0);
+      return total + getCompletedSubSteps(activity, step, index, workflowSteps).length;
+    }, 0);
+    return Math.round(Math.min(1, completedUnits / totalUnits) * 100);
+  };
+  const getActivityProgress = (activity: Activity) => getActivityProgressForWorkflow(activity, activeSteps);
+  const getDashboardActivityProgress = (activity: Activity) => {
+    const workflow = programOptions.find((item) => item.id === activity.programId)?.steps ?? activeSteps;
+    return getActivityProgressForWorkflow(activity, workflow);
   };
   const requestTimelineSubStepChange = (step: WorkflowStep, stepIndex: number, subStep: string) => {
     if (!canEdit || !selectedActivity) return;
@@ -1091,12 +2066,83 @@ function App() {
     }
   };
   const navigateTo = (
-    tab: "dashboard" | "programs" | "details" | "workflow" | "activities" | "settings" | "finance",
+    tab: "dashboard" | "details" | "workflow" | "activities" | "calendar" | "beneficiaries" | "settings" | "finance",
     message: string,
   ) => {
     setActiveTab(tab);
-    if (tab === "finance" && program.id) void loadAnnualAllocations(program.id).then(setAnnualAllocations).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load annual allocations"));
+    if (tab === "finance" && program.id) void loadAnnualAllocations(program.id).then((rows) => {
+      setAnnualAllocations(rows);
+      setAllocationsByProgram((current) => ({ ...current, [program.id]: rows }));
+    }).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Could not load annual allocations"));
     setNotice(message);
+  };
+  const openBeneficiaryForm = (record?: BeneficiaryRecord) => {
+    setBeneficiaryEditingId(record?.id ?? null);
+    setBeneficiaryForm({
+      program_id: record?.program_id ?? (systemRole === "superadmin" && beneficiaryProgramFilter !== "all" ? beneficiaryProgramFilter : program.id),
+      activity_id: record?.activity_id ?? "",
+      beneficiary_name: record?.beneficiary_name ?? "",
+      beneficiary_code: record?.beneficiary_code ?? "",
+      municipality: record?.municipality ?? "",
+      barangay: record?.barangay ?? "",
+      assistance_received: record?.assistance_received ?? "",
+    });
+    setBeneficiaryDialogOpen(true);
+  };
+  const saveBeneficiaryRecord = async () => {
+    const name = beneficiaryForm.beneficiary_name.trim();
+    const code = beneficiaryForm.beneficiary_code.trim();
+    const assistance = beneficiaryForm.assistance_received.trim();
+    if (!beneficiaryForm.program_id) {
+      setNotice("Select a program for this beneficiary record");
+      return;
+    }
+    if (!name && !code) {
+      setNotice("Enter a beneficiary name or beneficiary code");
+      return;
+    }
+    if (!assistance) {
+      setNotice("Assistance received is required");
+      return;
+    }
+
+    setBeneficiarySaving(true);
+    try {
+      const savedRecord = await saveBeneficiary({
+        id: beneficiaryEditingId ?? undefined,
+        program_id: beneficiaryForm.program_id,
+        activity_id: beneficiaryForm.activity_id || null,
+        beneficiary_name: name || null,
+        beneficiary_code: code || null,
+        municipality: beneficiaryForm.municipality.trim() || null,
+        barangay: beneficiaryForm.barangay.trim() || null,
+        assistance_received: assistance,
+      });
+      setBeneficiaryRecords((current) => beneficiaryEditingId
+        ? current.map((record) => record.id === savedRecord.id ? savedRecord : record)
+        : [savedRecord, ...current]);
+      setBeneficiaryDialogOpen(false);
+      setBeneficiaryEditingId(null);
+      setNotice(beneficiaryEditingId ? "Beneficiary record updated" : "Beneficiary record added");
+    } catch (error) {
+      setNotice(`Beneficiary record was not saved: ${getDatabaseErrorMessage(error)}`);
+    } finally {
+      setBeneficiarySaving(false);
+    }
+  };
+  const deleteBeneficiaryRecord = async () => {
+    if (!beneficiaryToDelete) return;
+    setBeneficiaryDeleting(true);
+    try {
+      await deleteBeneficiary(beneficiaryToDelete.id);
+      setBeneficiaryRecords((current) => current.filter((record) => record.id !== beneficiaryToDelete.id));
+      setBeneficiaryToDelete(null);
+      setNotice("Beneficiary record deleted");
+    } catch (error) {
+      setNotice(`Beneficiary record was not deleted: ${getDatabaseErrorMessage(error)}`);
+    } finally {
+      setBeneficiaryDeleting(false);
+    }
   };
   if (!databaseConfigured) {
     return (
@@ -1109,7 +2155,7 @@ function App() {
           <ol>
             <li>Create or select the DA-RFO-CAR Supabase project.</li>
             <li>Set <code>VITE_SUPABASE_URL</code> and the public anon or publishable key in <code>.env.local</code>.</li>
-            <li>Apply any missing migrations through <code>007</code> in order. On an existing database, run only migrations that have not already been applied.</li>
+            <li>Apply any missing migrations in filename order, including the annual APP, activity-calendar, and beneficiary-register migrations. On an existing database, run only migrations that have not already been applied.</li>
             <li>Restart the Vite server, then create the initial administrator in Supabase Auth and promote that profile as described in the README.</li>
           </ol>
           <p>For Vercel, set both Vite variables in the project's Environment Variables settings and redeploy the app.</p>
@@ -1160,12 +2206,12 @@ function App() {
               >
                 <LayoutDashboard size={14} /> Dashboard
               </button>
-              {systemRole === "superadmin" && <button
-                className={activeTab === "programs" ? "top-nav-item active" : "top-nav-item"}
-                onClick={() => navigateTo("programs", "Programs opened")}
+              <button
+                className={activeTab === "calendar" ? "top-nav-item active" : "top-nav-item"}
+                onClick={() => navigateTo("calendar", "Activity calendar opened")}
               >
-                <ClipboardList size={14} /> Programs
-              </button>}
+                <CalendarDays size={14} /> Calendar
+              </button>
               <button
                 className={
                   activeTab === "activities"
@@ -1175,6 +2221,12 @@ function App() {
                 onClick={() => navigateTo("activities", "Activities opened")}
               >
                 <Table2 size={14} /> Activities
+              </button>
+              <button
+                className={activeTab === "beneficiaries" ? "top-nav-item active" : "top-nav-item"}
+                onClick={() => navigateTo("beneficiaries", "Beneficiary register opened")}
+              >
+                <Users size={14} /> Beneficiaries
               </button>
               <button className={activeTab === "finance" ? "top-nav-item active" : "top-nav-item"} onClick={() => navigateTo("finance", "Financial management opened")}>
                 <CircleDollarSign size={14} /> Finance
@@ -1220,133 +2272,233 @@ function App() {
             {session && <button className="button secondary" onClick={() => void signOut()}>Sign out</button>}
           </div>
         </header>
-        <div className="content-wrap">
+        <div className={`content-wrap ${activeTab === "finance" ? "content-wrap-finance" : ""} ${activeTab === "calendar" ? "content-wrap-calendar" : ""}`}>
           <section className="page-heading">
             <div>
               <p className="eyebrow">
-                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "programs" ? "Programs" : activeTab === "finance" ? "Financial management" : activeTab === "settings" && settingsSection === "database" ? "Superadmin tools" : `${program.acronym} workspace`}
+                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "calendar" ? "Activity calendar" : activeTab === "beneficiaries" ? "Beneficiary register" : activeTab === "finance" ? "Financial management" : activeTab === "settings" && (settingsSection === "database" || settingsSection === "programs") ? "Superadmin tools" : `${program.acronym} workspace`}
               </p>
-              <h1>{activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "programs" ? "Programs" : activeTab === "details" ? "Program details" : activeTab === "activities" ? "Activity register" : activeTab === "finance" ? "Annual allocations & utilization" : "Settings"}</h1>
+              <div className="page-heading-title-row">
+                {activeTab === "dashboard" && systemRole === "superadmin" && <label className="superadmin-program-view">
+                  <span>Program view</span>
+                  <select value={dashboardProgramFilter} onChange={(event) => {
+                    const value = event.target.value;
+                    setDashboardProgramFilter(value);
+                    if (value === "all") {
+                      setActiveTab("dashboard");
+                      setNotice("All programs overview");
+                    } else {
+                      selectProgram(value);
+                    }
+                  }} aria-label="Choose program dashboard view">
+                    <option value="all">All programs</option>
+                    {programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}
+                  </select>
+                </label>}
+                <h1>{activeTab === "dashboard" ? (systemRole === "superadmin" ? "System dashboard" : "Program dashboard") : activeTab === "details" ? "Program details" : activeTab === "activities" ? "Activity register" : activeTab === "calendar" ? "Activity calendar" : activeTab === "beneficiaries" ? "Beneficiary register" : activeTab === "finance" ? "Annual allocations & utilization" : "Settings"}</h1>
+              </div>
               <p className="page-intro">
-                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "Monitor all programs, activities, budgets, and user access." : "Monitor activity totals, utilization, and overdue work.") : activeTab === "programs" ? "Create programs, edit program details, and assign program administrators." : activeTab === "finance" ? "Track appropriations, allotments, obligations, disbursements, accounts payable, cash advances, liquidation, and savings by fiscal year." : activeTab === "settings" && settingsSection === "database" ? "Browse database records in the read-only Superadmin database viewer." : "Manage the program's operational sequence and fund-tracking rules."}
+                {activeTab === "dashboard" ? (systemRole === "superadmin" ? "Monitor all programs, activities, budgets, and user access." : "Monitor activity totals, utilization, and overdue work.") : activeTab === "calendar" ? "Color-coded schedules can be edited here, and each day can have a shared note." : activeTab === "beneficiaries" ? "Record beneficiary identifiers, location, assistance received, and the activity supported." : activeTab === "finance" ? "Track appropriations, allotments, obligations, disbursements, accounts payable, cash advances, liquidation, and savings by fiscal year." : activeTab === "settings" && settingsSection === "programs" ? "Create programs and manage program details from the Superadmin workspace." : activeTab === "settings" && settingsSection === "database" ? "Browse database records in the read-only Superadmin database viewer." : "Manage the program's operational sequence and fund-tracking rules."}
               </p>
             </div>
             <div className="heading-actions">
               <span className="draft-pill">
                 <span /> {notice || "Unsaved changes"}
               </span>
-              {isAdmin && program.id && activeTab !== "finance" && !(activeTab === "settings" && settingsSection === "database") && <button className="button primary" onClick={() => void saveProgramChanges()}>
+              {isAdmin && program.id && activeTab !== "finance" && activeTab !== "calendar" && activeTab !== "beneficiaries" && !(activeTab === "settings" && settingsSection === "database") && <button className="button primary" onClick={() => void saveProgramChanges()}>
                 <Save size={16} /> {saved ? "Saved" : "Save program"}
               </button>}
             </div>
           </section>
-          {profile?.id === session?.user.id && systemRole === "user" && (
-            <section className="role-access-notice" role="status">
-              <div>
-                <strong>{profileLoadError?.userId === session?.user.id ? "Could not verify your administrator access" : "Some create and administration controls are restricted"}</strong>
-                <p>
-                  {profileLoadError?.userId === session?.user.id
-                    ? `Your profile role could not be loaded (${profileLoadError?.message}). Confirm migrations 003 and 004 are applied, then reload.`
-                    : `Signed in as ${session?.user.email ?? "this account"} with system role “user” and program role “${programRole}”. Creating programs requires Superadmin; adding workflow steps requires Superadmin or Program admin.`}
-                </p>
-                {profileLoadError?.userId !== session?.user.id && <details>
-                  <summary>Show SQL for the Supabase project owner</summary>
-                  <pre>{`update public.profiles
-set system_role = 'superadmin'
-where lower(email) = lower('your-auth-email@example.com');`}</pre>
-                  <small>Replace the example email with the email of your existing Supabase Auth user, run this in Supabase SQL Editor, then sign out and sign back in. Do not promote a program user.</small>
-                </details>}
-              </div>
-            </section>
-          )}
           {activeTab === "dashboard" ? (
             <div className="dashboard-grid">
-              <section className="dashboard-panel dashboard-program-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" ? "System portfolio" : "Program profile"}</p><h2>{systemRole === "superadmin" ? "All programs" : program.title}</h2></div><span className="dashboard-muted">{dashboardProgramCount} program{dashboardProgramCount === 1 ? "" : "s"}</span></div>{systemRole === "superadmin" ? <div className="superadmin-program-list">{programOptions.map((item) => <button className="superadmin-program-row" key={item.id} onClick={() => openProgramWorkspace(item.id)} aria-label={`Open ${item.acronym} finance and program workspace`}><span className="program-summary-copy">{item.logo ? <img src={item.logo} alt="" /> : <ShieldCheck size={28} />}<span><strong>{item.acronym}</strong><small>{item.title}</small></span></span><span><b>{(activitiesByProgram[item.id] ?? []).length}</b><small>activities</small></span><span className="program-row-open-label">Open workspace</span><ChevronDown size={17} /></button>)}</div> : <div className="program-summary"><div className="program-summary-copy">{program.logo ? <img src={program.logo} alt="" /> : <ShieldCheck size={28} />}<div><strong>{program.acronym}</strong><span>{program.agency}</span><span>{program.office}</span></div></div><div><small>Beneficiaries</small><strong>{program.beneficiaries}</strong></div><p>{program.description}</p></div>}</section>
-              <div className="dashboard-card dashboard-total"><span className="dashboard-label">Total activities</span><strong>{dashboardTotals.activities}</strong><small>{systemRole === "superadmin" ? "Across all programs" : `Registered in ${program.acronym}`}</small></div>
-              <div className="dashboard-card"><span className="dashboard-label">Approved budget</span><strong>₱{dashboardTotals.budget.toLocaleString()}</strong><small>Across all activities</small></div>
-              <div className="dashboard-card"><span className="dashboard-label">Recorded spending</span><strong>₱{dashboardTotals.spent.toLocaleString()}</strong><small>{dashboardTotals.budget ? Math.round((dashboardTotals.spent / dashboardTotals.budget) * 100) : 0}% utilized</small></div>
-              <div className="dashboard-card dashboard-overdue"><span className="dashboard-label">Overdue activities</span><strong>{dashboardTotals.overdue}</strong><small>Past target end date</small></div>
-              <section className="dashboard-panel dashboard-analytics-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">At a glance</p><h2>Activity portfolio</h2></div><span className="dashboard-muted">Live data</span></div><div className="dashboard-chart-grid"><div className="chart-block"><div className="chart-heading"><strong>Activities by status</strong><span>{dashboardTotals.activities} total</span></div><div className="status-bars">{dashboardStatusSummary.map((status) => <div className="status-bar-row" key={status.label}><span>{status.label}</span><div className="status-bar-track"><i className={status.className} style={{ width: `${dashboardTotals.activities ? (status.count / dashboardTotals.activities) * 100 : 0}%` }} /></div><b>{status.count}</b></div>)}</div></div><div className="chart-block budget-chart"><div className="chart-heading"><strong>Budget utilization</strong><span>{dashboardTotals.budget ? Math.round((dashboardTotals.spent / dashboardTotals.budget) * 100) : 0}% used</span></div><div className="budget-gauge"><div className="budget-gauge-fill" style={{ width: `${dashboardTotals.budget ? Math.min(100, (dashboardTotals.spent / dashboardTotals.budget) * 100) : 0}%` }} /></div><div className="budget-legend"><span><i className="legend-spent" /> Spent <b>₱{dashboardTotals.spent.toLocaleString()}</b></span><span><i className="legend-remaining" /> Remaining <b>₱{Math.max(0, dashboardTotals.budget - dashboardTotals.spent).toLocaleString()}</b></span></div></div></div></section>
-              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Needs attention</p><h2>Overdue activities</h2></div><button className="button secondary" onClick={() => navigateTo("activities", "Overdue activities opened")}>View activities</button></div>{dashboardActivities.filter((activity) => activity.endDate < today && activity.status !== "Completed").length ? <div className="overdue-list">{dashboardActivities.filter((activity) => activity.endDate < today && activity.status !== "Completed").map((activity) => <button className="overdue-row" key={activity.id} onClick={() => { setSelectedActivityId(activity.id); setShowActivityDialog(true); }}><span className="overdue-dot" /><span><strong>{activity.name}</strong><small>{activity.location} · Due {activity.endDate}</small></span><span className="status-tag status-revision">{activity.status}</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No overdue activities</div>}</section>
-              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" ? "Portfolio activity" : "Program activity"}</p><h2>Current progress</h2></div><span className="dashboard-muted">{dashboardActivities.length} activities</span></div><div className="dashboard-progress-list">{dashboardActivities.slice(0, 5).map((activity) => <div className="dashboard-progress-row" key={activity.id}><div><strong>{activity.name}</strong><small>{getNumberedStep(steps, activity.currentStep)}</small></div><div className="dashboard-progress-bar"><span style={{ width: `${activity.budget ? Math.min(100, (activity.spent / activity.budget) * 100) : 0}%` }} /></div><b>{activity.budget ? Math.round((activity.spent / activity.budget) * 100) : 0}%</b></div>)}</div></section>
-              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Completed work</p><h2>Finished activities</h2></div><span className="dashboard-muted">{dashboardActivities.filter((activity) => activity.status === "Completed").length} finished</span></div>{dashboardActivities.filter((activity) => activity.status === "Completed").length ? <div className="finished-list">{dashboardActivities.filter((activity) => activity.status === "Completed").map((activity) => <button className="finished-row" key={activity.id} onClick={() => { setSelectedActivityId(activity.id); setShowActivityDialog(true); }}><span className="finished-check"><Check size={13} /></span><span><strong>{activity.name}</strong><small>{activity.location} · Finished {activity.endDate}</small></span><span className="status-tag status-completed">Completed</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No finished activities</div>}</section>
+              <section className="dashboard-panel dashboard-program-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" && dashboardProgramFilter === "all" ? "System portfolio" : "Program profile"}</p><h2>{systemRole === "superadmin" && dashboardProgramFilter === "all" ? "All programs" : program.title}</h2></div><span className="dashboard-muted">{dashboardProgramCount} program{dashboardProgramCount === 1 ? "" : "s"}</span></div>{systemRole === "superadmin" && dashboardProgramFilter === "all" ? <div className="superadmin-program-list">{programOptions.map((item) => <button className="superadmin-program-row" key={item.id} onClick={() => openProgramWorkspace(item.id)} aria-label={`Open ${item.acronym} finance and program workspace`}><span className="program-summary-copy">{item.logo ? <img src={item.logo} alt="" /> : <ShieldCheck size={28} />}<span><strong>{item.acronym}</strong><small>{item.title}</small></span></span><span><b>{(activitiesByProgram[item.id] ?? []).length}</b><small>activities</small></span><span className="program-row-open-label">Open workspace</span><ChevronDown size={17} /></button>)}</div> : <div className="program-summary"><div className="program-summary-copy">{program.logo ? <img src={program.logo} alt="" /> : <ShieldCheck size={28} />}<div><strong>{program.acronym}</strong><span>{program.agency}</span><span>{program.office}</span></div></div><div><small>Beneficiaries</small><strong>{program.beneficiaries}</strong></div><p>{program.description}</p></div>}</section>
+              <div className="dashboard-filter-bar">
+                <label>Fiscal year
+                  <select value={dashboardFiscalYear} onChange={(event) => setDashboardFiscalYear(Number(event.target.value))}>
+                    {dashboardYearOptions.map((year) => <option key={year} value={year}>FY {year}</option>)}
+                  </select>
+                </label>
+                <label>Activity status
+                  <select value={dashboardStatusFilter} onChange={(event) => setDashboardStatusFilter(event.target.value)}>
+                    <option value="all">All statuses</option>
+                    {Array.from(new Set(allDashboardActivities.map((activity) => activity.status))).sort().map((status) => <option key={status} value={status}>{status}</option>)}
+                  </select>
+                </label>
+                <span className="dashboard-filter-scope">Showing {dashboardScopeLabel}</span>
+              </div>
+              <section className="dashboard-metric-section dashboard-financial-metrics">
+                <div className="dashboard-metric-heading"><div><p className="eyebrow">Financial overview · FY {dashboardYear}</p><h2>Budget and expenditure</h2></div><div className="dashboard-finance-heading-actions"><span className="dashboard-muted">{dashboardYearAllocations.length} allocation record{dashboardYearAllocations.length === 1 ? "" : "s"} · {dashboardScopeLabel}</span><div className="dashboard-card-settings"><button type="button" className="icon-button" aria-label="Financial card settings" aria-expanded={showDashboardCardSettings} onClick={() => setShowDashboardCardSettings((visible) => !visible)}><Settings size={16} /></button>{showDashboardCardSettings && <div className="dashboard-card-settings-menu" aria-label="Choose financial cards"><strong>Show financial cards</strong>{dashboardFinancialCardOptions.map((card) => <label key={card.id}><input type="checkbox" checked={dashboardFinancialColumns.includes(card.id)} onChange={(event) => setDashboardFinancialColumns((current) => event.target.checked ? [...current, card.id] : current.filter((item) => item !== card.id))} /><span>{card.label}</span></label>)}</div>}</div></div></div>
+                <div className="dashboard-metric-grid">
+                  {dashboardFinancialCardOptions.filter((card) => dashboardFinancialColumns.includes(card.id)).map((card) => <button type="button" key={card.id} className={`dashboard-card dashboard-card-button ${card.id === "appropriation" ? "dashboard-financial-highlight" : ""}`} onClick={() => setDashboardChartMetric(card.metric)}><span className="dashboard-label">{card.label}</span><strong>{formatDashboardCurrency(card.value)}</strong><small>{card.detail} · View chart</small></button>)}
+                </div>
+                <div className="dashboard-visualizations">
+                  <div className="chart-block">
+                    <div className="chart-heading"><strong>Budget execution</strong><span>Allocation measures · FY {dashboardYear}</span></div>
+                    {[
+                      { label: "Appropriation", value: dashboardFinancialTotals.appropriation, color: "chart-appropriation" },
+                      { label: "Allotment", value: dashboardFinancialTotals.allotment, color: "chart-allotment" },
+                      { label: "Obligations", value: dashboardObligations, color: "chart-obligations" },
+                      { label: "APP planned procurement", value: dashboardAppBudget, color: "chart-disbursements" },
+                      { label: "Disbursements", value: dashboardFinancialTotals.disbursements, color: "chart-disbursements" },
+                    ].map((metric) => <div className="dashboard-chart-value-row" key={metric.label}><span>{metric.label}</span><div className="dashboard-chart-value-track"><i className={metric.color} style={{ width: `${dashboardFinancialTotals.appropriation ? Math.min(100, metric.value / dashboardFinancialTotals.appropriation * 100) : 0}%` }} /></div><b>{formatDashboardCurrency(metric.value)}</b></div>)}
+                  </div>
+                  <div className="chart-block">
+                    <div className="chart-heading"><strong>Obligations vs activity budget</strong><span>{dashboardYearActivityBudget ? Math.round(dashboardObligations / dashboardYearActivityBudget * 100) : 0}% obligated</span></div>
+                    <div className="budget-gauge"><div className="budget-gauge-fill" style={{ width: `${dashboardYearActivityBudget ? Math.min(100, dashboardObligations / dashboardYearActivityBudget * 100) : 0}%` }} /></div>
+                    <div className="budget-legend"><span><i className="legend-spent" /> Obligations <b>{formatDashboardCurrency(dashboardObligations)}</b></span><span><i className="legend-remaining" /> Remaining activity budget <b>{formatDashboardCurrency(Math.max(0, dashboardYearActivityBudget - dashboardObligations))}</b></span></div>
+                  </div>
+                </div>
+              </section>
+              <section className="dashboard-metric-section dashboard-activity-metrics">
+                <div className="dashboard-metric-heading"><div><p className="eyebrow">Operational overview</p><h2>Activity overview</h2></div><span className="dashboard-muted">{dashboardActivities.length} matching activities · {dashboardScopeLabel}</span></div>
+                <div className="dashboard-metric-grid">
+                  <button type="button" className="dashboard-card dashboard-total dashboard-card-button" onClick={() => setDashboardChartMetric("totalActivities")}><span className="dashboard-label">Total activities</span><strong>{dashboardTotals.activities}</strong><small>All registered activities · View chart</small></button>
+                  <button type="button" className="dashboard-card dashboard-card-button" onClick={() => setDashboardChartMetric("completedActivities")}><span className="dashboard-label">Completed activities</span><strong>{dashboardTotals.completed}</strong><small>{dashboardTotals.activities ? Math.round(dashboardTotals.completed / dashboardTotals.activities * 100) : 0}% of total · View chart</small></button>
+                  <button type="button" className="dashboard-card dashboard-card-button" onClick={() => setDashboardChartMetric("notCompletedActivities")}><span className="dashboard-label">Not completed</span><strong>{dashboardTotals.activities - dashboardTotals.completed}</strong><small>Still in the workflow · View chart</small></button>
+                  <button type="button" className="dashboard-card dashboard-overdue dashboard-card-button" onClick={() => setDashboardChartMetric("overdueActivities")}><span className="dashboard-label">Overdue activities</span><strong>{dashboardTotals.overdue}</strong><small>Past target end date · View chart</small></button>
+                </div>
+              </section>
+              <section className="dashboard-panel dashboard-analytics-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Operational analytics</p><h2>Activity status distribution</h2></div><span className="dashboard-muted">{dashboardTotals.activities} activities · {dashboardScopeLabel}</span></div><div className="chart-block"><div className="chart-heading"><strong>Activities by status</strong><span>Click a status to view activities</span></div><div className="status-bars">{dashboardStatusSummary.map((status) => <button type="button" className="status-bar-row dashboard-status-button" key={status.label} title={`View ${status.count} ${status.label} activities`} onClick={() => setDashboardStatusDialog(status.label)}><span>{status.label}</span><div className="status-bar-track"><i className={status.className} style={{ width: `${dashboardTotals.activities ? (status.count / dashboardTotals.activities) * 100 : 0}%` }} /></div><b>{status.count}</b></button>)}</div></div></section>
+              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Needs attention</p><h2>Overdue activities</h2></div><button className="button secondary" onClick={() => navigateTo("activities", "Overdue activities opened")}>View activities</button></div>{dashboardActivities.filter((activity) => activity.endDate < today && activity.status !== "Completed").length ? <div className="overdue-list">{dashboardActivities.filter((activity) => activity.endDate < today && activity.status !== "Completed").map((activity) => <button className="overdue-row" key={activity.id} onClick={() => openDashboardActivity(activity)}><span className="overdue-dot" /><span><strong>{activity.name}</strong><small>{activity.location} · Due {activity.endDate}</small></span><span className="status-tag status-revision">{activity.status}</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No overdue activities</div>}</section>
+              <section className="dashboard-panel dashboard-progress-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">{systemRole === "superadmin" ? "Portfolio activity" : "Program activity"}</p><h2>Activity progress</h2></div><div className="dashboard-progress-heading-actions"><span className="dashboard-muted">{dashboardActivities.length} activities</span><div className="dashboard-card-settings"><button type="button" className="icon-button" aria-label="Activity progress settings" aria-expanded={showDashboardProgressSettings} onClick={() => setShowDashboardProgressSettings((visible) => !visible)}><Settings size={16} /></button>{showDashboardProgressSettings && <div className="dashboard-card-settings-menu dashboard-progress-settings-menu"><strong>View as</strong><label><input type="radio" name="dashboard-progress-view" checked={dashboardProgressView === "graph"} onChange={() => { setDashboardProgressView("graph"); setShowDashboardProgressSettings(false); }} /><span>Graph view</span></label><label><input type="radio" name="dashboard-progress-view" checked={dashboardProgressView === "list"} onChange={() => { setDashboardProgressView("list"); setShowDashboardProgressSettings(false); }} /><span>List view</span></label></div>}</div></div></div><div className="dashboard-progress-card-content">{dashboardProgressView === "graph" ? <div className="workflow-completion-chart">{dashboardActivities.length ? dashboardActivities.slice(0, 12).map((activity) => { const progress = getDashboardActivityProgress(activity); return <button type="button" className="workflow-completion-item dashboard-progress-activity-button" key={activity.id} title={`${activity.name}: ${progress}% — open activity`} aria-label={`Open ${activity.name}, ${progress}% complete`} onClick={() => openDashboardActivity(activity)}><span style={{ height: `${progress}%` }} /><small>{activity.name}</small><b>{progress}%</b></button>; }) : <div className="empty-state">No activities match these filters.</div>}</div> : <div className="dashboard-progress-list">{dashboardActivities.slice(0, 12).map((activity) => { const progress = getDashboardActivityProgress(activity); const workflow = programOptions.find((item) => item.id === activity.programId)?.steps ?? steps; return <button type="button" className="dashboard-progress-row dashboard-progress-activity-button" key={activity.id} onClick={() => openDashboardActivity(activity)}><span><strong>{activity.name}</strong><small>{getNumberedStep(workflow, activity.currentStep)}</small></span><span className="dashboard-progress-bar"><span style={{ width: `${progress}%` }} /></span><b>{progress}%</b></button>; })}{!dashboardActivities.length && <div className="empty-state">No activities match these filters.</div>}</div>}</div></section>
+              <section className="dashboard-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Completed work</p><h2>Finished activities</h2></div><span className="dashboard-muted">{dashboardActivities.filter((activity) => activity.status === "Completed").length} finished</span></div>{dashboardActivities.filter((activity) => activity.status === "Completed").length ? <div className="finished-list">{dashboardActivities.filter((activity) => activity.status === "Completed").map((activity) => <button className="finished-row" key={activity.id} onClick={() => openDashboardActivity(activity)}><span className="finished-check"><Check size={13} /></span><span><strong>{activity.name}</strong><small>{activity.location} · Finished {activity.endDate}</small></span><span className="status-tag status-completed">Completed</span></button>)}</div> : <div className="empty-state"><Check size={20} /> No finished activities</div>}</section>
             </div>
           ) : activeTab === "finance" ? (
             <section className="finance-page">
               <div className="finance-toolbar">
-                <div><p className="eyebrow">{program.acronym} · Annual financial records</p><h2>Fiscal-year funding and utilization</h2><p>Each fiscal year and fund source is stored as its own database record.</p></div>
-                <label className="fiscal-year-select">Fiscal year<input type="number" min="2000" max="2200" value={selectedFiscalYear} onChange={(event) => setSelectedFiscalYear(Number(event.target.value))} /></label>
+                <div><p className="eyebrow">{program.acronym} · Annual financial records{systemRole === "superadmin" ? " · Superadmin read-only view" : ""}</p><h2>{financeSheet === "APP" ? "Annual Procurement Plan (APP)" : financeSheet === "WFP" ? "Work and Financial Plan (WFP)" : "Project Procurement Management Plan (PPMP)"}</h2><p>View {financeSheet} sheets by fiscal year. Financial editing is restricted to this program's administrator.</p></div>
+                <div className="finance-toolbar-actions">
+                  {systemRole === "superadmin" && <label className="fiscal-year-select finance-program-select">Program<select aria-label="Select a program to view its financial records" value={program.id} onChange={(event) => { if (event.target.value !== program.id) selectProgram(event.target.value); }}><option value="" disabled>Select a program</option>{programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}</select></label>}
+                  <label className="fiscal-year-select">Fiscal year<select value={selectedFiscalYear} onChange={(event) => setSelectedFiscalYear(Number(event.target.value))}>{Array.from(new Set([...annualAllocations.map((row) => row.fiscal_year), ...procurementPlanYears, selectedFiscalYear, new Date().getFullYear()])).sort((a, b) => b - a).map((year) => <option key={year} value={year}>FY {year}</option>)}</select></label>
+                  <button type="button" className="button secondary" onClick={() => setShowAllocationEditor(true)}><Settings size={15} /> {canManageFinance ? "Edit annual financial details" : "View annual financial details"}</button>
+                </div>
               </div>
               {(() => {
-                const rows = annualAllocations.filter((row) => row.fiscal_year === selectedFiscalYear);
-                const totals = rows.reduce((total, row) => ({
+                const allocationRows = annualAllocations.filter((row) => row.fiscal_year === selectedFiscalYear);
+                const annualActivityObligations = activities
+                  .filter((activity) => getActivityYear(activity) === selectedFiscalYear)
+                  .reduce((total, activity) => total + activity.spent, 0);
+                const totals = allocationRows.reduce((total, row) => ({
                   appropriation: total.appropriation + Number(row.appropriation),
                   allotment: total.allotment + Number(row.allotment_received),
-                  obligations: total.obligations + Number(row.obligations),
                   disbursements: total.disbursements + Number(row.disbursements),
-                }), { appropriation: 0, allotment: 0, obligations: 0, disbursements: 0 });
+                }), { appropriation: 0, allotment: 0, disbursements: 0 });
                 const peso = (amount: number) => `₱${amount.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                const renderAppPlanRow = (row: ProcurementPlanItem | null) => {
+                  const key = procurementPlanRowKey(row);
+                  const draft = procurementPlanDrafts[key] ?? (row ? appPlanItemToDraft(row) : createEmptyAppPlanRowDraft());
+                  const saving = procurementPlanSavingId === key;
+                  const textCell = (field: Exclude<keyof AppPlanRowDraft, "early_procurement_activity">, label: string) => {
+                    if (!canManageFinance) return <span>{draft[field] || "—"}</span>;
+                    const inputProps = {
+                      className: `app-spreadsheet-input ${field === "project_description" || field === "bid_evaluation_criteria" || field === "remarks" ? "app-spreadsheet-multiline" : ""}`,
+                      "aria-label": `${label}${row ? ` for ${draft.project_title}` : ""}`,
+                      value: draft[field],
+                      disabled: saving,
+                      onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => updateProcurementPlanDraft(row, field, event.target.value),
+                    };
+                    return field === "project_description" || field === "bid_evaluation_criteria" || field === "remarks"
+                      ? <textarea {...inputProps} rows={3} />
+                      : <input {...inputProps} />;
+                  };
+                  const monthCell = (field: "procurement_start" | "procurement_end", label: string) => canManageFinance
+                    ? <input className="app-spreadsheet-input app-month-input" type="month" aria-label={`${label}${row ? ` for ${draft.project_title}` : ""}`} value={draft[field]} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, field, event.target.value)} />
+                    : <span>{draft[field] ? `${draft[field].slice(5, 7)}/${draft[field].slice(0, 4)}` : "—"}</span>;
+                  return <tr key={key}>
+                    <td>{textCell("project_title", "Project title")}</td>
+                    <td>{textCell("implementing_unit", "End-user or implementing unit")}</td>
+                    <td>{textCell("project_description", "General project description")}</td>
+                    <td>{textCell("procurement_mode", "Mode of procurement")}</td>
+                    <td>{canManageFinance ? <select className="app-spreadsheet-input" aria-label={`Early procurement activity for ${draft.project_title || "new project"}`} value={draft.early_procurement_activity ? "yes" : "no"} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, "early_procurement_activity", event.target.value === "yes")}><option value="yes">Yes</option><option value="no">No</option></select> : <span>{draft.early_procurement_activity ? "Yes" : "No"}</span>}</td>
+                    <td>{textCell("bid_evaluation_criteria", "Bid evaluation criteria")}</td>
+                    <td>{monthCell("procurement_start", "Start of procurement activity")}</td>
+                    <td>{monthCell("procurement_end", "End of procurement activity")}</td>
+                    <td>{textCell("source_of_fund", "Source of fund")}</td>
+                    <td>{canManageFinance ? <input className="app-spreadsheet-input app-budget-input" type="number" min="0" step="0.01" aria-label={`Estimated budget for ${draft.project_title || "new project"}`} value={draft.estimated_budget} disabled={saving} onChange={(event) => updateProcurementPlanDraft(row, "estimated_budget", event.target.value)} /> : <span>{peso(Number(draft.estimated_budget) || 0)}</span>}</td>
+                    <td>{textCell("procurement_strategy", "Procurement strategy or tools")}</td>
+                    <td>{textCell("remarks", "Remarks")}</td>
+                    {canManageFinance && <td><div className="finance-row-actions"><button type="button" className="button primary spreadsheet-save" disabled={saving || !procurementPlanDrafts[key]} onClick={() => void saveProcurementPlanRow(row)}><Save size={13} /> {saving ? "Saving" : "Save"}</button>{procurementPlanDrafts[key] && <button type="button" className="button secondary spreadsheet-save" disabled={saving} onClick={() => setProcurementPlanDrafts((current) => { const next = { ...current }; delete next[key]; return next; })}>Cancel</button>}{row && <button type="button" className="icon-button danger" aria-label={`Delete APP project ${row.project_title}`} onClick={() => void deleteProcurementPlanRow(row)}><Trash2 size={15} /></button>}</div></td>}
+                  </tr>;
+                };
                 return <>
                   <div className="finance-summary-grid">
                     <article><small>Allocated budget / appropriation</small><strong>{peso(totals.appropriation)}</strong><span>Annual budget authority</span></article>
-                    <article><small>Allotment received</small><strong>{peso(totals.allotment)}</strong><span>Allotment utilization: {totals.allotment ? Math.round(totals.obligations / totals.allotment * 100) : 0}%</span></article>
-                    <article><small>Obligations</small><strong>{peso(totals.obligations)}</strong><span>Unobligated allotment: {peso(totals.allotment - totals.obligations)}</span></article>
-                    <article><small>Disbursements</small><strong>{peso(totals.disbursements)}</strong><span>Unpaid obligations: {peso(totals.obligations - totals.disbursements)}</span></article>
+                    <article><small>Allotment received</small><strong>{peso(totals.allotment)}</strong><span>Annual allotment authority</span></article>
+                    <article><small>Obligations</small><strong>{peso(annualActivityObligations)}</strong><span>Automatically totaled from activity records</span></article>
+                    <article><small>Disbursements</small><strong>{peso(totals.disbursements)}</strong><span>Recorded financial disbursements</span></article>
                   </div>
-                  <div className="finance-content-grid">
-                    <section className="finance-card">
-                      <div className="section-title">
-                        <div><h3>Annual allocation records</h3><p>GAA, continuing appropriations, trust receipts, and other sources.</p></div>
-                        <div className="finance-records-actions">
-                          <span className="dashboard-muted">{rows.length} rows</span>
-                          {canEdit && <button className="button primary" onClick={() => { setEditingAllocationId(null); setAllocationDraft(createEmptyAllocationDraft()); setShowAllocationForm(true); }}><Plus size={15} /> Add FY {selectedFiscalYear} allocation</button>}
-                        </div>
+                  <nav className="finance-sheet-tabs" aria-label="Annual financial worksheets">{(["APP", "WFP", "PPMP"] as ProcurementPlanType[]).map((sheet) => <button key={sheet} type="button" className={financeSheet === sheet ? "finance-sheet-tab active" : "finance-sheet-tab"} aria-current={financeSheet === sheet ? "page" : undefined} onClick={() => setFinanceSheet(sheet)}>{sheet}</button>)}</nav>
+                  {financeSheet === "APP" ? <>
+                    <section className="finance-card app-plan-header">
+                      <div><p className="eyebrow">{program.acronym} · FY {selectedFiscalYear}</p><h3>Annual Procurement Plan{procurementPlanHeader.is_continuing ? " — Continuing" : ""}</h3><p className="app-sheet-save-status">{procurementPlanSheet ? `${procurementPlanSheet.plan_status} APP saved` : "New APP sheet"}</p></div>
+                      <div className="app-plan-header-controls">
+                        <label className="app-continuing-control"><input type="checkbox" checked={procurementPlanHeader.is_continuing} disabled={!canManageFinance} onChange={(event) => setProcurementPlanHeader((current) => ({ ...current, is_continuing: event.target.checked }))} /> Continuing</label>
+                        <label>Plan status<select value={procurementPlanHeader.plan_status} disabled={!canManageFinance} onChange={(event) => setProcurementPlanHeader((current) => ({ ...current, plan_status: event.target.value as "Indicative" | "Final" }))}><option>Indicative</option><option>Final</option></select></label>
+                        <label>Updated, version no.<input value={procurementPlanHeader.version_no} disabled={!canManageFinance} onChange={(event) => setProcurementPlanHeader((current) => ({ ...current, version_no: event.target.value }))} /></label>
+                        {canManageFinance && <button type="button" className="button secondary" onClick={() => void saveProcurementPlanHeader()}><Save size={14} /> Save APP details</button>}
                       </div>
-                      {rows.length ? <div className="finance-table-wrap"><table className="finance-table"><thead><tr><th>Fund source</th><th>Allocated budget</th><th>Allotment received</th><th>Obligations</th><th>Disbursements</th><th>Unobligated allotment</th>{canEdit && <th>Actions</th>}</tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><strong>{row.fund_source}</strong><small>{row.remarks || `FY ${row.fiscal_year}`}</small></td><td>{peso(Number(row.appropriation))}</td><td>{peso(Number(row.allotment_received))}<small>{row.allotment_reference || "SARO/NCA ref. not recorded"}</small></td><td>{peso(Number(row.obligations))}<small>{row.obligation_reference || "ORS/BURS ref. not recorded"}</small></td><td>{peso(Number(row.disbursements))}<small>{row.disbursement_reference || "DV/ADA ref. not recorded"}</small></td><td>{peso(Number(row.allotment_received) - Number(row.obligations))}</td>{canEdit && <td><div className="finance-row-actions"><button className="button secondary" onClick={() => { setEditingAllocationId(row.id); setAllocationDraft({ fund_source: row.fund_source, allotment_reference: row.allotment_reference ?? "", obligation_reference: row.obligation_reference ?? "", disbursement_reference: row.disbursement_reference ?? "", appropriation: String(row.appropriation), allotment_received: String(row.allotment_received), obligations: String(row.obligations), disbursements: String(row.disbursements), accounts_payable: String(row.accounts_payable), cash_advances: String(row.cash_advances), liquidation: String(row.liquidation), savings: String(row.savings), remarks: row.remarks ?? "" }); setShowAllocationForm(true); }}>Edit</button><button className="icon-button danger" aria-label={`Delete ${row.fund_source} allocation`} onClick={() => void removeAllocation(row.id)}><Trash2 size={15} /></button></div></td>}</tr>)}</tbody></table></div> : <div className="empty-state">No financial records for FY {selectedFiscalYear} yet.</div>}
-                      {rows.map((row) => <details className="finance-record-details" key={`${row.id}-details`}><summary>Additional financial details · {row.fund_source}</summary><div><span>Accounts payable <b>{peso(Number(row.accounts_payable))}</b></span><span>Cash advances <b>{peso(Number(row.cash_advances))}</b></span><span>Liquidation <b>{peso(Number(row.liquidation))}</b></span><span>Savings <b>{peso(Number(row.savings))}</b></span></div></details>)}
                     </section>
-                    {canEdit && showAllocationForm && <div className="dialog-overlay allocation-dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget && !allocationSaving) { setEditingAllocationId(null); setAllocationDraft(createEmptyAllocationDraft()); setShowAllocationForm(false); } }}>
-                      <dialog open className="activity-dialog allocation-dialog" aria-labelledby="allocation-dialog-title">
-                      <section className="finance-card allocation-form">
-                      <div className="section-title"><div><p className="eyebrow">FY {selectedFiscalYear} · Annual allocation</p><h3 id="allocation-dialog-title">{editingAllocationId ? "Edit allocation" : `Add FY ${selectedFiscalYear} allocation`}</h3><p>Amounts are validated against the appropriation-to-disbursement ceilings.</p></div><button className="icon-button" aria-label="Close allocation dialog" disabled={allocationSaving} onClick={() => { setEditingAllocationId(null); setAllocationDraft(createEmptyAllocationDraft()); setShowAllocationForm(false); }}><X size={17} /></button></div>
-                      <div className="finance-form-grid">
-                        <label>Fund source<input value={allocationDraft.fund_source} onChange={(event) => setAllocationDraft({ ...allocationDraft, fund_source: event.target.value })} placeholder="e.g. GAA, continuing appropriation" /></label>
-                        <label>Allocated budget / appropriation<input type="number" min="0" value={allocationDraft.appropriation} onChange={(event) => setAllocationDraft({ ...allocationDraft, appropriation: event.target.value })} /></label>
-                        <label>Allotment received<input type="number" min="0" value={allocationDraft.allotment_received} onChange={(event) => setAllocationDraft({ ...allocationDraft, allotment_received: event.target.value })} /><small>SARO / NCA or other allotment authority amount</small></label>
-                        <label>Allotment reference<input value={allocationDraft.allotment_reference} onChange={(event) => setAllocationDraft({ ...allocationDraft, allotment_reference: event.target.value })} placeholder="SARO / NCA number" /></label>
-                        <label>Obligations<input type="number" min="0" value={allocationDraft.obligations} onChange={(event) => setAllocationDraft({ ...allocationDraft, obligations: event.target.value })} /><small>Obligations recorded against the allotment</small></label>
-                        <label>Obligation reference<input value={allocationDraft.obligation_reference} onChange={(event) => setAllocationDraft({ ...allocationDraft, obligation_reference: event.target.value })} placeholder="ORS / BURS number" /></label>
-                        <label>Disbursements<input type="number" min="0" value={allocationDraft.disbursements} onChange={(event) => setAllocationDraft({ ...allocationDraft, disbursements: event.target.value })} /><small>Payments released against obligations</small></label>
-                        <label>Disbursement reference<input value={allocationDraft.disbursement_reference} onChange={(event) => setAllocationDraft({ ...allocationDraft, disbursement_reference: event.target.value })} placeholder="DV / ADA / check reference" /></label>
-                        <label>Accounts payable<input type="number" min="0" value={allocationDraft.accounts_payable} onChange={(event) => setAllocationDraft({ ...allocationDraft, accounts_payable: event.target.value })} /></label>
-                        <label>Cash advances<input type="number" min="0" value={allocationDraft.cash_advances} onChange={(event) => setAllocationDraft({ ...allocationDraft, cash_advances: event.target.value })} /></label>
-                        <label>Liquidation<input type="number" min="0" value={allocationDraft.liquidation} onChange={(event) => setAllocationDraft({ ...allocationDraft, liquidation: event.target.value })} /></label>
-                        <label>Savings / reverted balance<input type="number" min="0" value={allocationDraft.savings} onChange={(event) => setAllocationDraft({ ...allocationDraft, savings: event.target.value })} /></label>
-                        <label className="finance-form-wide">Remarks<input value={allocationDraft.remarks} onChange={(event) => setAllocationDraft({ ...allocationDraft, remarks: event.target.value })} placeholder="Reference, fund validity, or notes" /></label>
-                      </div>
-                      <div className="finance-form-actions"><button className="button secondary" disabled={allocationSaving} onClick={() => { setEditingAllocationId(null); setAllocationDraft(createEmptyAllocationDraft()); setShowAllocationForm(false); }}>{editingAllocationId ? "Cancel edit" : "Cancel"}</button><button className="button primary" disabled={allocationSaving} onClick={() => void saveAllocation()}><Save size={14} /> {allocationSaving ? "Saving..." : "Save to online database"}</button></div>
-                      </section>
-                      </dialog>
-                    </div>}
-                  </div>
+                    <section className="finance-card app-plan-card">
+                      <div className="section-title app-plan-section-heading"><div><h3>APP project details</h3><p>{procurementPlanItems.length} procurement project{procurementPlanItems.length === 1 ? "" : "s"} · enter dates as month and year. Saving a project also creates or updates its Activity and Calendar entry.</p></div><div className="app-plan-transfer-actions"><button type="button" className="button secondary" onClick={exportAppPlanCsv} disabled={!procurementPlanItems.length}><Download size={14} /> Export CSV</button>{canManageFinance && <><button type="button" className="button secondary" onClick={() => appPlanImportInputRef.current?.click()} disabled={procurementPlanImporting}><Upload size={14} /> {procurementPlanImporting ? "Importing…" : "Import CSV"}</button><input ref={appPlanImportInputRef} className="visually-hidden" type="file" accept=".csv,text/csv" aria-label="Import APP projects from CSV" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void importAppPlanCsv(file); event.currentTarget.value = ""; }} /></>}</div></div>
+                      {procurementPlanLoading ? <div className="empty-state">Loading FY {selectedFiscalYear} APP…</div> : procurementPlanItems.length || canManageFinance ? <div className="finance-table-wrap app-plan-table-wrap"><table className="finance-table app-plan-table"><colgroup>{appPlanColumnWidths.slice(0, canManageFinance ? 13 : 12).map((width, index) => <col key={index} style={{ width }} />)}</colgroup><thead><tr><th className="app-plan-group-header" colSpan={6} title="Procurement project details">Project details</th><th className="app-plan-group-header app-plan-timeline-header" colSpan={2} title="Projected timeline (month and year)">Timeline (MM/YYYY)</th><th className="app-plan-group-header app-plan-funding-header" colSpan={2} title="Funding details">Funding</th><th className="app-plan-group-header app-plan-strategy-header" rowSpan={2}>{appPlanResizeHandle(10)}<span title="Procurement strategy or tools">Strategy / tools</span></th><th className="app-plan-group-header app-plan-remarks-header" rowSpan={2}>{appPlanResizeHandle(11)}<span title="Remarks and other relevant descriptions of the procurement project, if applicable">Remarks</span></th>{canManageFinance && <th className="app-plan-group-header app-plan-actions-header" rowSpan={2}>{appPlanResizeHandle(12)}Actions</th>}</tr><tr>{["Project title", "End-user or implementing unit", "General description of the project", "Mode of procurement", "Early procurement activity? (Yes/No)", "Criteria for bid evaluation (including sustainability and domestic preference)", "Start of procurement activity", "End of procurement activity", "Source of fund", "Estimated budget / approved budget for the contract (PhP)"].map((heading, index) => {
+                        const shortHeadings = ["Project title", "End user / unit", "Project description", "Procurement mode", "Early procurement?", "Evaluation criteria", "Start", "End", "Fund source", "Est. budget (PHP)"];
+                        return <th className="app-plan-column-header" key={heading} title={heading} aria-label={heading}>{appPlanResizeHandle(index)}<span>{shortHeadings[index]}</span></th>;
+                      })}</tr></thead><tbody>{procurementPlanItems.map((row) => renderAppPlanRow(row))}{canManageFinance && renderAppPlanRow(null)}</tbody><tfoot><tr><th colSpan={9}>APP estimated budget total</th><td>{peso(procurementPlanItems.reduce((sum, row) => sum + Number(row.estimated_budget), 0))}</td><td colSpan={canManageFinance ? 3 : 2}></td></tr></tfoot></table></div> : <div className="empty-state">No APP projects have been entered for FY {selectedFiscalYear}.</div>}
+                    </section>
+                  </> : <section className="finance-card finance-sheet-placeholder"><p className="eyebrow">FY {selectedFiscalYear} · {financeSheet}</p><h3>{financeSheet === "WFP" ? "Work and Financial Plan" : "Project Procurement Management Plan"}</h3><p>This separate fiscal-year worksheet is reserved for {financeSheet}. Its table will be added when you provide that template.</p></section>}
                 </>;
               })()}
+              {showAllocationEditor && <div className="dialog-overlay finance-editor-overlay" onClick={(event) => { if (event.target === event.currentTarget) setShowAllocationEditor(false); }}>
+                <dialog open className="activity-dialog finance-allocation-editor" aria-labelledby="annual-finance-editor-title">
+                  <section className="finance-card">
+                    <div className="section-title"><div><p className="eyebrow">FY {selectedFiscalYear} · {canManageFinance ? "Program admin" : "Read only"}</p><h3 id="annual-finance-editor-title">{canManageFinance ? "Edit annual financial details" : "Annual financial details"}</h3><p>Obligations and other calculated totals are excluded from this form.</p></div><button type="button" className="icon-button" aria-label="Close annual financial editor" onClick={() => setShowAllocationEditor(false)}><X size={17} /></button></div>
+                    {(() => {
+                      const rows = annualAllocations.filter((row) => row.fiscal_year === selectedFiscalYear);
+                      const newRowKey = allocationRowDraftKey(null);
+                      const renderAllocationForm = (row: AnnualProgramAllocation | null) => {
+                        const key = allocationRowDraftKey(row);
+                        const draft = allocationRowDrafts[key] ?? (row ? allocationToDraft(row) : createEmptyAllocationDraft());
+                        const saving = allocationRowSavingId === key;
+                        const moneyField = (field: keyof AllocationDraft, label: string) => <label className="allocation-form-field"><span>{label}</span><input type="number" min="0" step="0.01" value={draft[field]} disabled={!canManageFinance || saving} onChange={(event) => updateAllocationRowDraft(row, field, event.target.value)} /></label>;
+                        const referenceField = (field: keyof AllocationDraft, label: string) => <label className="allocation-form-field"><span>{label}</span><input value={draft[field]} placeholder="Optional reference" disabled={!canManageFinance || saving} onChange={(event) => updateAllocationRowDraft(row, field, event.target.value)} /></label>;
+                        return <form className="annual-allocation-form" key={key} onSubmit={(event) => { event.preventDefault(); void saveAllocationRow(row); }}>
+                          <div className="annual-allocation-form-heading"><strong>{draft.fund_source || "New fund source"}</strong>{row && <span>FY {row.fiscal_year}</span>}</div>
+                          <div className="allocation-form-grid">
+                            <label className="allocation-form-field"><span>Fund source</span><input value={draft.fund_source} disabled={!canManageFinance || saving} onChange={(event) => updateAllocationRowDraft(row, "fund_source", event.target.value)} /></label>
+                            {moneyField("appropriation", "Appropriation")}
+                            {moneyField("allotment_received", "Allotment received")}
+                            {referenceField("allotment_reference", "SARO / NCA reference")}
+                            {moneyField("disbursements", "Disbursements")}
+                            {referenceField("disbursement_reference", "DV / ADA reference")}
+                            {moneyField("accounts_payable", "Accounts payable")}
+                            {moneyField("cash_advances", "Cash advances")}
+                            {moneyField("liquidation", "Liquidation")}
+                            {moneyField("savings", "Savings")}
+                            <label className="allocation-form-field allocation-form-wide"><span>Remarks</span><textarea rows={2} value={draft.remarks} disabled={!canManageFinance || saving} onChange={(event) => updateAllocationRowDraft(row, "remarks", event.target.value)} /></label>
+                          </div>
+                          {canManageFinance && <div className="allocation-form-actions">
+                            {allocationRowDrafts[key] && <button type="button" className="button secondary" disabled={saving} onClick={() => setAllocationRowDrafts((current) => { const next = { ...current }; delete next[key]; return next; })}>Cancel changes</button>}
+                            <button type="submit" className="button primary" disabled={saving || !allocationRowDrafts[key]}><Save size={14} /> {saving ? "Saving…" : "Save details"}</button>
+                            {row && <button type="button" className="button danger-outline" disabled={saving} onClick={() => void removeAllocation(row.id)}><Trash2 size={14} /> Delete</button>}
+                          </div>}
+                        </form>;
+                      };
+                      return <div className="annual-allocation-editor">
+                        {!rows.length && !canManageFinance && <div className="empty-state">No annual financial details for FY {selectedFiscalYear}.</div>}
+                        <div className="annual-allocation-grid">{rows.map((row) => renderAllocationForm(row))}{canManageFinance && allocationRowDrafts[newRowKey] && renderAllocationForm(null)}</div>
+                        {canManageFinance && <button type="button" className="button secondary add-allocation-button" disabled={Boolean(allocationRowDrafts[newRowKey])} onClick={() => setAllocationRowDrafts((current) => ({ ...current, [newRowKey]: createEmptyAllocationDraft() }))}><Plus size={14} /> Add fund source</button>}
+                      </div>;
+                    })()}
+                  </section>
+                </dialog>
+              </div>}
             </section>
           ) : (
-          <div className={`builder-layout ${activeTab === "activities" ? "activities-layout" : ""}`}>
+          <div className={`builder-layout ${activeTab === "activities" ? "activities-layout" : ""} ${activeTab === "calendar" ? "calendar-builder-layout" : ""} ${activeTab === "beneficiaries" ? "beneficiaries-layout" : ""}`}>
             <section className="builder-panel">
-              {activeTab === "programs" && !showProgramDetailDialog ? (
-                <div className="programs-page">
-                  <div className="section-title"><div><p className="eyebrow">Superadmin workspace</p><h2>All programs</h2><p>Select a program to view or edit its details.</p></div><button className="button primary" onClick={() => setShowProgramCreateDialog(true)}><Plus size={15} /> Create program</button></div>
-                  <div className="programs-list">
-                    {programOptions.map((item) => <div className={`program-list-entry ${item.id === program.id ? "selected" : ""}`} key={item.id}>
-                      <button className="program-list-row" onClick={() => openProgramWorkspace(item.id)} aria-label={`Open ${item.acronym} finance and program workspace`}><span className="program-list-mark">{item.acronym.slice(0, 2)}</span><span><strong>{item.title}</strong><small>{item.acronym} · {item.agency}</small></span><span className="program-list-count">{(activitiesByProgram[item.id] ?? []).length} activities</span><span className="program-row-open-label">Open workspace</span><ChevronDown size={18} /></button>
-                      <button className="button secondary program-list-details" onClick={() => { selectProgram(item.id); setProgramDialogEditing(false); setProgramDialogTab("details"); setShowProgramDetailDialog(true); }}><Settings size={14} /> Settings</button>
-                    </div>)}
-                  </div>
-                </div>
-              ) : showProgramDetailDialog || activeTab === "details" ? (
-                <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowProgramDetailDialog(false); setActiveTab("programs"); }}>
+              {showProgramDetailDialog || activeTab === "details" ? (
+                <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowProgramDetailDialog(false); setActiveTab("settings"); setSettingsSection("programs"); }}>
                 <dialog open={showProgramDetailDialog} className="form-section profile-dialog">
                   <div className="section-title">
                     <div>
@@ -1359,7 +2511,7 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                     </div>
                     <div className="detail-actions">{!programDialogEditing && programDialogTab === "details" && <button className="button secondary" onClick={() => setProgramDialogEditing(true)}>Edit program</button>}{programDialogEditing && <button className="button primary" onClick={() => void saveProgramChanges().then((success) => { if (success) setProgramDialogEditing(false); })}><Save size={14} /> Save</button>}<span className="step-number">01</span></div>
                   </div>
-                  <button className="icon-button profile-dialog-close" aria-label="Close program details" onClick={() => { setShowProgramDetailDialog(false); setActiveTab("programs"); }}><X size={17} /></button>
+                  <button className="icon-button profile-dialog-close" aria-label="Close program details" onClick={() => { setShowProgramDetailDialog(false); setActiveTab("settings"); setSettingsSection("programs"); }}><X size={17} /></button>
                   <div className="program-dialog-tabs"><button className={programDialogTab === "details" ? "activity-view active" : "activity-view"} onClick={() => setProgramDialogTab("details")}>Program details</button><button className={programDialogTab === "admins" ? "activity-view active" : "activity-view"} onClick={() => setProgramDialogTab("admins")}>Admin accounts</button></div>
                   {programDialogTab === "details" ? <>
                   <div className="logo-row">
@@ -1543,6 +2695,175 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                 </dialog>
                 </div>
               ) : null}
+              {activeTab === "calendar" && (
+                <section className="calendar-page">
+                  <div className="calendar-toolbar">
+                    <div>
+                      <p className="eyebrow">{program.acronym} · Activity schedule</p>
+                      <h2>{calendarMonthTitle}</h2>
+                      <p>Choose a day to review activities, edit schedules, or add a shared note.</p>
+                    </div>
+                    <div className="calendar-month-actions">
+                      <button className="button secondary" onClick={() => { const now = new Date(); setCalendarMonth(new Date(now.getFullYear(), now.getMonth(), 1)); setSelectedCalendarDay(toLocalDateKey(now)); }}>Today</button>
+                      <button className="icon-button" aria-label="Previous month" onClick={() => { const month = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1); setCalendarMonth(month); setSelectedCalendarDay(toLocalDateKey(month)); }}><ChevronLeft size={17} /></button>
+                      <button className="icon-button" aria-label="Next month" onClick={() => { const month = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1); setCalendarMonth(month); setSelectedCalendarDay(toLocalDateKey(month)); }}><ChevronRight size={17} /></button>
+                    </div>
+                  </div>
+                  <div className="calendar-legend" aria-label="Activity status colors">
+                    <span><i className="calendar-status-planning" /> Planning / Pending</span>
+                    <span><i className="calendar-status-progress" /> In progress</span>
+                    <span><i className="calendar-status-revision" /> For revision</span>
+                    <span><i className="calendar-status-completed" /> Completed</span>
+                    <span><i className="calendar-status-other" /> Other status</span>
+                  </div>
+                  <div className="calendar-layout">
+                    <section className="calendar-month-card" aria-label={`${calendarMonthTitle} activity calendar`}>
+                      <div className="calendar-weekdays">{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => <span key={day}>{day}</span>)}</div>
+                      <div className="calendar-grid">
+                        {calendarDays.map(({ date, key, inMonth }) => {
+                          const dayActivities = scheduledCalendarActivities.filter((activity) =>
+                            activity.startDate <= key && getActivityCalendarEndDate(activity) >= key,
+                          );
+                          return <div key={key} className={`calendar-day ${inMonth ? "" : "outside-month"} ${selectedCalendarDay === key ? "selected" : ""} ${toLocalDateKey(new Date()) === key ? "today" : ""}`} onClick={(event) => {
+                            if ((event.target as HTMLElement).closest("button")) return;
+                            setSelectedCalendarDay(key);
+                            setCalendarDialogDay(key);
+                            if (!inMonth) setCalendarMonth(new Date(date.getFullYear(), date.getMonth(), 1));
+                          }}>
+                            <button className="calendar-day-number" aria-label={`Show activities for ${date.toLocaleDateString()}`} aria-pressed={selectedCalendarDay === key} onClick={() => { setSelectedCalendarDay(key); setCalendarDialogDay(key); if (!inMonth) setCalendarMonth(new Date(date.getFullYear(), date.getMonth(), 1)); }}>{date.getDate()}</button>
+                            {calendarDayNotes[`${program.id}:${key}`] && <span className="calendar-note-indicator" title="This day has a note">Note</span>}
+                            <div className="calendar-day-events">
+                              {dayActivities.slice(0, 2).map((activity) => <button className={`calendar-event ${calendarActivityColorClass(activity.status)}`} key={activity.id} title={`${activity.name} · ${activity.status}`} onClick={() => { setSelectedActivityId(activity.id); setActivityDialogTab("workflow"); setExpandedTimelineSteps({}); setPendingTimelineStep(null); setShowActivityDialog(true); setActiveTab("activities"); }}>{activity.name}</button>)}
+                              {dayActivities.length > 2 && <span className="calendar-more">+{dayActivities.length - 2} more</span>}
+                            </div>
+                          </div>;
+                        })}
+                      </div>
+                    </section>
+                  </div>
+                  {unscheduledCalendarActivities.length > 0 && <details className="calendar-unscheduled">
+                    <summary className="calendar-unscheduled-summary"><span><p className="eyebrow">Unscheduled activities</p><h3>Needs a date</h3></span><small>{unscheduledCalendarActivities.length} activity{unscheduledCalendarActivities.length === 1 ? "" : "ies"}</small></summary>
+                    <div className="calendar-unscheduled-list">{unscheduledCalendarActivities.map((activity) => <article className={`calendar-event-row ${calendarActivityColorClass(activity.status)}`} key={activity.id}>
+                      <span className="calendar-dialog-activity-heading"><button type="button" className="calendar-activity-open" onClick={() => { setSelectedActivityId(activity.id); setActivityDialogTab("workflow"); setExpandedTimelineSteps({}); setPendingTimelineStep(null); setShowActivityDialog(true); setActiveTab("activities"); }}>{activity.name}</button><span className={`status-tag ${calendarActivityColorClass(activity.status)}`}>{activity.status}</span></span>
+                      <small>FY {getActivityYear(activity) ?? "Not set"} · No schedule</small>
+                      {canEdit && (!activity.activityCode.startsWith("APP-") || isAdmin) && (
+                        calendarScheduleEditingId === activity.id && calendarScheduleDraft
+                          ? <div className="calendar-schedule-editor">
+                            <label>{calendarScheduleDraft.isAppSchedule ? "Start month" : "Start date"}<input type={calendarScheduleDraft.isAppSchedule ? "month" : "date"} value={calendarScheduleDraft.startDate} onChange={(event) => setCalendarScheduleDraft({ ...calendarScheduleDraft, startDate: event.target.value })} /></label>
+                            <label>{calendarScheduleDraft.isAppSchedule ? "End month" : "End date"}<input type={calendarScheduleDraft.isAppSchedule ? "month" : "date"} value={calendarScheduleDraft.endDate} onChange={(event) => setCalendarScheduleDraft({ ...calendarScheduleDraft, endDate: event.target.value })} /></label>
+                            <div><button type="button" className="button secondary" disabled={calendarScheduleSaving} onClick={() => { setCalendarScheduleEditingId(null); setCalendarScheduleDraft(null); }}>Cancel</button><button type="button" className="button primary" disabled={calendarScheduleSaving} onClick={() => void saveCalendarSchedule(activity)}><Save size={13} /> {calendarScheduleSaving ? "Saving…" : "Schedule"}</button></div>
+                          </div>
+                          : <button type="button" className="button secondary" disabled={calendarScheduleSaving} onClick={() => editCalendarSchedule(activity)}>Set schedule</button>
+                      )}
+                    </article>)}</div>
+                  </details>}
+                  {calendarDialogDay && (() => {
+                    const activitiesOnDay = scheduledCalendarActivities.filter((activity) =>
+                      activity.startDate <= calendarDialogDay && getActivityCalendarEndDate(activity) >= calendarDialogDay,
+                    );
+                    const dayLabel = new Date(`${calendarDialogDay}T12:00:00`).toLocaleDateString(undefined, {
+                      weekday: "long", month: "long", day: "numeric", year: "numeric",
+                    });
+                    return <div className="dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget) setCalendarDialogDay(null); }}>
+                      <dialog open className="activity-dialog calendar-day-dialog" aria-labelledby="calendar-day-dialog-title">
+                        <div className="detail-heading">
+                          <div><p className="eyebrow">{program.acronym} · Calendar</p><h2 id="calendar-day-dialog-title">{dayLabel}</h2><p className="detail-subtitle">{activitiesOnDay.length} scheduled activit{activitiesOnDay.length === 1 ? "y" : "ies"}</p></div>
+                          <button className="icon-button" aria-label="Close day activities" onClick={() => setCalendarDialogDay(null)}><X size={17} /></button>
+                        </div>
+                        {activitiesOnDay.length
+                          ? <div className="calendar-dialog-activities">{activitiesOnDay.map((activity) => <article className={`calendar-event-row calendar-dialog-activity ${calendarActivityColorClass(activity.status)}`} key={activity.id}>
+                            <span className="calendar-dialog-activity-heading"><button type="button" className="calendar-activity-open" onClick={() => { setCalendarDialogDay(null); setSelectedActivityId(activity.id); setActivityDialogTab("workflow"); setExpandedTimelineSteps({}); setPendingTimelineStep(null); setShowActivityDialog(true); setActiveTab("activities"); }}>{activity.name}</button><span className={`status-tag ${calendarActivityColorClass(activity.status)}`}>{activity.status}</span></span>
+                            <small>{activity.location || "No location"} · {formatActivitySchedule(activity)}</small>
+                            <small>Approved budget ₱{activity.budget.toLocaleString()}</small>
+                            {canEdit && (!activity.activityCode.startsWith("APP-") || isAdmin) && <div className="calendar-schedule-actions">
+                              {calendarScheduleEditingId === activity.id && calendarScheduleDraft
+                                ? <div className="calendar-schedule-editor">
+                                  <label>{calendarScheduleDraft.isAppSchedule ? "Start month" : "Start date"}<input type={calendarScheduleDraft.isAppSchedule ? "month" : "date"} value={calendarScheduleDraft.startDate} onChange={(event) => setCalendarScheduleDraft({ ...calendarScheduleDraft, startDate: event.target.value })} /></label>
+                                  <label>{calendarScheduleDraft.isAppSchedule ? "End month" : "End date"}<input type={calendarScheduleDraft.isAppSchedule ? "month" : "date"} value={calendarScheduleDraft.endDate} onChange={(event) => setCalendarScheduleDraft({ ...calendarScheduleDraft, endDate: event.target.value })} /></label>
+                                  <div><button type="button" className="button secondary" disabled={calendarScheduleSaving} onClick={() => { setCalendarScheduleEditingId(null); setCalendarScheduleDraft(null); }}>Cancel</button><button type="button" className="button primary" disabled={calendarScheduleSaving} onClick={() => void saveCalendarSchedule(activity)}><Save size={13} /> {calendarScheduleSaving ? "Saving…" : "Save dates"}</button></div>
+                                </div>
+                                : <button type="button" className="button secondary" disabled={calendarScheduleSaving} onClick={() => editCalendarSchedule(activity)}>Edit schedule</button>}
+                            </div>}
+                          </article>)}</div>
+                          : <p className="calendar-empty calendar-dialog-empty">No activities scheduled for this day.</p>}
+                        <section className="calendar-note-editor">
+                          <label htmlFor="calendar-day-note">Notes for this day</label>
+                          <textarea id="calendar-day-note" value={calendarNoteDrafts[`${program.id}:${calendarDialogDay}`] ?? calendarDayNotes[`${program.id}:${calendarDialogDay}`]?.note ?? ""} maxLength={4000} disabled={!canEdit || !databaseConfigured || calendarNotesLoading || calendarNotesUnavailable} placeholder={calendarNotesUnavailable ? "Saved notes could not be loaded." : canEdit ? "Add a reminder or note for this day…" : "No note has been added for this day."} onChange={(event) => { const key = `${program.id}:${calendarDialogDay}`; setCalendarNoteDrafts((current) => ({ ...current, [key]: event.target.value })); }} />
+                          <div className="calendar-note-footer">
+                            <small>{calendarNotesLoading ? "Loading saved notes…" : calendarNotesUnavailable ? "Notes could not be loaded." : "Notes are shared with members of this program."}</small>
+                            {calendarNotesUnavailable && canEdit && <button type="button" className="button secondary" onClick={() => setCalendarNotesReloadToken((current) => current + 1)}>Retry</button>}
+                            {canEdit && <button type="button" className="button primary" disabled={!databaseConfigured || calendarNoteSaving || calendarNotesLoading || calendarNotesUnavailable} onClick={() => void saveCalendarNoteDraft()}><Save size={13} /> {calendarNoteSaving ? "Saving…" : "Save note"}</button>}
+                          </div>
+                        </section>
+                      </dialog>
+                    </div>;
+                  })()}
+                </section>
+              )}
+              {activeTab === "beneficiaries" && (
+                <section className="beneficiary-page">
+                  <div className="beneficiary-toolbar">
+                    <div>
+                      <p className="eyebrow">{systemRole === "superadmin" ? "System register" : `${program.acronym} register`}</p>
+                      <h2>Beneficiaries</h2>
+                      <p>Store only the identifier and program delivery details needed for beneficiary tracking.</p>
+                    </div>
+                    <div className="beneficiary-toolbar-actions">
+                      <label className="activity-search"><Search size={16} /><input value={beneficiarySearch} onChange={(event) => setBeneficiarySearch(event.target.value)} placeholder="Search beneficiaries" aria-label="Search beneficiaries" /></label>
+                      {systemRole === "superadmin" && <label className="beneficiary-program-filter">Program<select value={beneficiaryProgramFilter} onChange={(event) => setBeneficiaryProgramFilter(event.target.value)}><option value="all">All programs</option>{programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}</select></label>}
+                      {canEdit && <button type="button" className="button primary" onClick={() => openBeneficiaryForm()}><Plus size={15} /> Add beneficiary</button>}
+                    </div>
+                  </div>
+                  <div className="beneficiary-summary">
+                    <div><small>Records</small><strong>{visibleBeneficiaryRecords.length}</strong></div>
+                    <div><small>Linked to activity</small><strong>{visibleBeneficiaryRecords.filter((record) => record.activity_id).length}</strong></div>
+                    <div><small>Showing</small><strong>{filteredBeneficiaryRecords.length}</strong></div>
+                  </div>
+                  <div className="beneficiary-table-wrap">
+                    <table className="beneficiary-table">
+                      <thead><tr><th>Beneficiary</th><th>Program</th><th>Activity</th><th>Municipality / Barangay</th><th>Assistance received</th>{canEdit && <th>Actions</th>}</tr></thead>
+                      <tbody>
+                        {beneficiaryTableLoading
+                          ? <tr><td colSpan={canEdit ? 6 : 5} className="beneficiary-empty">Loading beneficiary records…</td></tr>
+                          : filteredBeneficiaryRecords.map((record) => {
+                            const recordProgram = programOptions.find((option) => option.id === record.program_id);
+                            const recordActivity = (activitiesByProgram[record.program_id] ?? []).find((activity) => activity.id === record.activity_id);
+                            return <tr key={record.id}>
+                              <td><strong>{record.beneficiary_name || record.beneficiary_code || "Unnamed beneficiary"}</strong>{record.beneficiary_name && record.beneficiary_code && <small>{record.beneficiary_code}</small>}</td>
+                              <td>{recordProgram ? `${recordProgram.acronym} — ${recordProgram.title}` : "Program"}</td>
+                              <td>{recordActivity?.name ?? (record.activity_id ? "Activity unavailable" : "Not linked")}</td>
+                              <td>{[record.municipality, record.barangay].filter(Boolean).join(" · ") || "Not specified"}</td>
+                              <td>{record.assistance_received}</td>
+                              {canEdit && <td><div className="beneficiary-row-actions"><button type="button" className="button secondary" onClick={() => openBeneficiaryForm(record)}>Edit</button><button type="button" className="button danger-outline" onClick={() => setBeneficiaryToDelete(record)}>Delete</button></div></td>}
+                            </tr>;
+                          })}
+                        {!beneficiaryTableLoading && filteredBeneficiaryRecords.length === 0 && <tr><td colSpan={canEdit ? 6 : 5} className="beneficiary-empty">{beneficiarySearch.trim() ? "No records match your search." : "No beneficiary records have been added yet."}</td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                  {beneficiaryDialogOpen && <div className="dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget && !beneficiarySaving) setBeneficiaryDialogOpen(false); }}>
+                    <dialog open className="activity-dialog beneficiary-dialog">
+                      <div className="detail-heading"><div><p className="eyebrow">Beneficiary register</p><h2>{beneficiaryEditingId ? "Edit beneficiary" : "Add beneficiary"}</h2><p className="detail-subtitle">A name or beneficiary code is required. Avoid entering government ID numbers or contact details.</p></div><button type="button" className="icon-button" aria-label="Close beneficiary form" disabled={beneficiarySaving} onClick={() => setBeneficiaryDialogOpen(false)}><X size={17} /></button></div>
+                      <div className="beneficiary-form-grid">
+                        {systemRole === "superadmin" && <label>Program<select value={beneficiaryForm.program_id} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, program_id: event.target.value, activity_id: "" }))}><option value="">Select program</option>{programOptions.map((item) => <option key={item.id} value={item.id}>{item.acronym} — {item.title}</option>)}</select></label>}
+                        <label>Beneficiary name<input value={beneficiaryForm.beneficiary_name} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, beneficiary_name: event.target.value }))} autoComplete="off" /></label>
+                        <label>Beneficiary code<input value={beneficiaryForm.beneficiary_code} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, beneficiary_code: event.target.value }))} autoComplete="off" /></label>
+                        <label>Activity (optional)<select value={beneficiaryForm.activity_id} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, activity_id: event.target.value }))}><option value="">Not linked</option>{(activitiesByProgram[beneficiaryForm.program_id] ?? (beneficiaryForm.program_id === program.id ? activities : [])).map((activity) => <option key={activity.id} value={activity.id}>{activity.name}</option>)}</select></label>
+                        <label>Municipality<input value={beneficiaryForm.municipality} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, municipality: event.target.value }))} /></label>
+                        <label>Barangay<input value={beneficiaryForm.barangay} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, barangay: event.target.value }))} /></label>
+                        <label className="beneficiary-form-wide">Assistance received<textarea rows={3} value={beneficiaryForm.assistance_received} onChange={(event) => setBeneficiaryForm((current) => ({ ...current, assistance_received: event.target.value }))} /></label>
+                      </div>
+                      <div className="beneficiary-form-actions"><button type="button" className="button secondary" disabled={beneficiarySaving} onClick={() => setBeneficiaryDialogOpen(false)}>Cancel</button><button type="button" className="button primary" disabled={beneficiarySaving} onClick={() => void saveBeneficiaryRecord()}><Save size={14} /> {beneficiarySaving ? "Saving…" : "Save beneficiary"}</button></div>
+                    </dialog>
+                  </div>}
+                  {beneficiaryToDelete && <div className="dialog-overlay" onClick={(event) => { if (event.target === event.currentTarget && !beneficiaryDeleting) setBeneficiaryToDelete(null); }}>
+                    <dialog open className="activity-dialog beneficiary-delete-dialog">
+                      <div className="detail-heading"><div><p className="eyebrow">Confirm deletion</p><h2>Delete beneficiary record?</h2><p className="detail-subtitle">This cannot be undone. The record for {beneficiaryToDelete.beneficiary_name || beneficiaryToDelete.beneficiary_code || "this beneficiary"} will be permanently removed.</p></div><button type="button" className="icon-button" aria-label="Close deletion confirmation" disabled={beneficiaryDeleting} onClick={() => setBeneficiaryToDelete(null)}><X size={17} /></button></div>
+                      <div className="beneficiary-form-actions"><button type="button" className="button secondary" disabled={beneficiaryDeleting} onClick={() => setBeneficiaryToDelete(null)}>Cancel</button><button type="button" className="button danger-outline" disabled={beneficiaryDeleting} onClick={() => void deleteBeneficiaryRecord()}><Trash2 size={14} /> {beneficiaryDeleting ? "Deleting…" : "Delete record"}</button></div>
+                    </dialog>
+                  </div>}
+                </section>
+              )}
               {activeTab === "activities" && (
                 <div className="activity-panel">
                   <div className="activity-toolbar">
@@ -1552,21 +2873,10 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                       </p>
                       <h2>Activities</h2>
                       <p>
-                        Track each approved activity from planning through
-                        procurement, implementation, liquidation, and savings.
+                        Activities are created from project titles in the Finance APP sheet and appear here automatically.
                       </p>
                     </div>
                     <label className="activity-search"><Search size={16} /><input value={activitySearch} onChange={(event) => setActivitySearch(event.target.value)} placeholder="Search activities, locations, or status" aria-label="Search activities" /></label>
-                    {canEdit && <button
-                      className="button primary"
-                          onClick={() => {
-                            setEditingActivityId(null);
-                            setNewActivity({ name: "", location: "", startDate: "", endDate: "", budget: "", spent: "0", activityDesign: "", status: "Planning", currentStep: steps[0]?.title ?? "", currentSubStep: steps[0]?.subSteps?.[0] ?? "" });
-                            setShowActivityForm(true);
-                          }}
-                      >
-                          <Plus size={16} /> {editingActivityId ? "Edit activity" : "Create activity"}
-                      </button>}
                   </div>
                   <div className="activity-tabs" role="tablist" aria-label="Activity views">
                     <span className="activity-view active"><Table2 size={15} /> Activity table</span>
@@ -1574,7 +2884,7 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                   {showActivityForm && (
                     <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setShowActivityForm(false); setEditingActivityId(null); }}>
                     <dialog open className="activity-form activity-dialog">
-                      <div className="activity-form-heading"><div><p className="eyebrow">Activity register</p><h2>{editingActivityId ? "Edit activity" : "Create activity"}</h2><p>Capture the activity details, budget, and current workflow position.</p></div><button className="icon-button" aria-label="Close activity form" onClick={() => { setShowActivityForm(false); setEditingActivityId(null); }}><X size={17} /></button></div>
+                      <div className="activity-form-heading"><div><p className="eyebrow">Activity register</p><h2>Edit activity</h2><p>Update the activity details and current workflow position.</p></div><button className="icon-button" aria-label="Close activity form" onClick={() => { setShowActivityForm(false); setEditingActivityId(null); }}><X size={17} /></button></div>
                       <label>
                         Activity name
                         <input
@@ -1633,6 +2943,7 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                           type="number"
                           min="0"
                           value={newActivity.budget}
+                          disabled={!canManageFinance}
                           onChange={(event) =>
                             setNewActivity({
                               ...newActivity,
@@ -1643,8 +2954,8 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                         />
                       </label>
                           <label>
-                            Recorded spending
-                            <input type="number" min="0" value={newActivity.spent} onChange={(event) => setNewActivity({ ...newActivity, spent: event.target.value })} placeholder="0.00" />
+                            Obligations
+                            <input type="number" min="0" value={newActivity.spent} disabled={!canManageFinance} onChange={(event) => setNewActivity({ ...newActivity, spent: event.target.value })} placeholder="0.00" />
                           </label>
                           <label>
                             Current workflow step
@@ -1691,8 +3002,8 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                               </span>
                             </div>
                             <small>
-                              {activity.location} <span>•</span>{" "}
-                              {activity.startDate} to {activity.endDate}
+                                {activity.location || "No location"} <span>•</span>{" "}
+                                {formatActivitySchedule(activity)}
                             </small>
                             <div className="activity-card-meta">
                               <span>
@@ -1714,13 +3025,12 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                               <h2>{selectedActivity.name}</h2>
                               <p className="detail-subtitle">
                                 {selectedActivity.location} ·{" "}
-                                {selectedActivity.startDate} to{" "}
-                                {selectedActivity.endDate}
+                                {formatActivitySchedule(selectedActivity)}
                               </p>
                             </div>
                             <div className="detail-actions">
-                              {canEdit && <button className="button secondary" onClick={() => editActivity(selectedActivity)}>Edit activity</button>}
-                              {isAdmin && <button className="icon-button danger" aria-label="Delete activity" onClick={() => deleteActivity(selectedActivity.id)}><Trash2 size={17} /></button>}
+                              {canEdit && !selectedActivity.activityCode.startsWith("APP-") && <button className="button secondary" onClick={() => editActivity(selectedActivity)}>Edit activity</button>}
+                              {isAdmin && !selectedActivity.activityCode.startsWith("APP-") && <button className="icon-button danger" aria-label="Delete activity" onClick={() => deleteActivity(selectedActivity.id)}><Trash2 size={17} /></button>}
                               <button className="icon-button" aria-label="Close activity" onClick={() => { setSelectedActivityId(""); setShowActivityDialog(false); }}><X size={17} /></button>
                             </div>
                           </div>
@@ -1738,7 +3048,7 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                               </strong>
                             </div>
                             <div>
-                              <small>Recorded spending</small>
+                              <small>Obligations</small>
                               <strong>
                                 ₱{selectedActivity.spent.toLocaleString()}
                               </strong>
@@ -1915,15 +3225,14 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                               </td>
                               <td>{activity.location}</td>
                               <td>
-                                <span>{activity.startDate}</span>
-                                <small>to {activity.endDate}</small>
+                                <span>{formatActivitySchedule(activity)}</span>
                               </td>
                               <td>
                                 <strong>
                                   ₱{activity.budget.toLocaleString()}
                                 </strong>
                                 <small>
-                                  Spent ₱{activity.spent.toLocaleString()}
+                                  Obligations ₱{activity.spent.toLocaleString()}
                                 </small>
                               </td>
                               <td>
@@ -1956,7 +3265,7 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                             <p className="detail-subtitle">{program.title} ({program.acronym}) · {selectedActivity.location}</p>
                           </div>
                           <div className="detail-actions">
-                            {canEdit && <button className="button secondary" onClick={() => editActivity(selectedActivity)}>Edit activity</button>}
+                            {canEdit && !selectedActivity.activityCode.startsWith("APP-") && <button className="button secondary" onClick={() => editActivity(selectedActivity)}>Edit activity</button>}
                             <button className="icon-button" aria-label="Close activity design" onClick={() => setShowActivityDialog(false)}><X size={17} /></button>
                           </div>
                         </div>
@@ -2040,16 +3349,28 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
                   <div className="section-title">
                     <div>
                       <p className="eyebrow">Administration</p>
-                      <h2>Program settings</h2>
-                      <p>Manage the program workflow and review database records where permitted.</p>
+                      <h2>{settingsSection === "programs" ? "Program management" : "Program settings"}</h2>
+                      <p>{settingsSection === "programs" ? "Create programs, open their workspaces, and manage program details." : "Manage the program workflow and review database records where permitted."}</p>
                     </div>
                   </div>
                   <div className="settings-switcher">
+                    {systemRole === "superadmin" && <button className={settingsSection === "programs" ? "settings-switch active" : "settings-switch"} onClick={() => setSettingsSection("programs")}><ClipboardList size={13} /> Programs</button>}
                     <button className={settingsSection === "fund-workflow" ? "settings-switch active" : "settings-switch"} onClick={() => setSettingsSection("fund-workflow")}>Fund workflow</button>
                     {isAdmin && <button className={settingsSection === "audit" ? "settings-switch active" : "settings-switch"} onClick={() => setSettingsSection("audit")}>Audit log</button>}
                     {systemRole === "superadmin" && <button className={settingsSection === "database" ? "settings-switch active" : "settings-switch"} onClick={() => { setSettingsSection("database"); void loadDatabaseBrowser(); }}>Database</button>}
                   </div>
-                  {settingsSection === "database" && systemRole === "superadmin" ? (
+                  {settingsSection === "programs" && systemRole === "superadmin" ? (
+                    <div className="programs-page settings-programs-page">
+                      <div className="section-title"><div><p className="eyebrow">Superadmin workspace</p><h2>All programs</h2><p>Select a program to open its workspace or manage its settings.</p></div><button className="button primary" onClick={() => setShowProgramCreateDialog(true)}><Plus size={15} /> Create program</button></div>
+                      <div className="programs-list">
+                        {programOptions.map((item) => <div className={`program-list-entry ${item.id === program.id ? "selected" : ""}`} key={item.id}>
+                          <button className="program-list-row" onClick={() => openProgramWorkspace(item.id)} aria-label={`Open ${item.acronym} finance and program workspace`}><span className="program-list-mark">{item.acronym.slice(0, 2)}</span><span><strong>{item.title}</strong><small>{item.acronym} · {item.agency}</small></span><span className="program-list-count">{(activitiesByProgram[item.id] ?? []).length} activities</span><span className="program-row-open-label">Open workspace</span><ChevronDown size={18} /></button>
+                          <button className="button secondary program-list-details" onClick={() => { selectProgram(item.id); setProgramDialogEditing(false); setProgramDialogTab("details"); setShowProgramDetailDialog(true); }}><Settings size={14} /> Settings</button>
+                        </div>)}
+                        {programOptions.length === 0 && <div className="empty-state">No programs are available yet.</div>}
+                      </div>
+                    </div>
+                  ) : settingsSection === "database" && systemRole === "superadmin" ? (
                     <div className="database-browser">
                       <div className="database-browser-header">
                         <div><p className="eyebrow">Read-only inspection</p><h2>Database contents</h2><p>Browse application records without editing or exposing credentials.</p></div>
@@ -2103,7 +3424,7 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
               )}
             </section>
 
-            {activeTab !== "activities" && <aside className="preview-column">
+            {activeTab !== "activities" && activeTab !== "calendar" && activeTab !== "beneficiaries" && <aside className="preview-column">
               <div className="preview-heading">
                 <div>
                   <p className="eyebrow">Live preview</p>
@@ -2226,23 +3547,105 @@ where lower(email) = lower('your-auth-email@example.com');`}</pre>
             </aside>}
           </div>)}
 
-          {activeTab === "dashboard" && selectedActivity && showActivityDialog && (
-            <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setSelectedActivityId(""); setShowActivityDialog(false); }}>
+          {activeTab === "dashboard" && dashboardChartMetric && (
+            <div className="dialog-overlay dashboard-chart-overlay" onClick={(event) => { if (event.target === event.currentTarget) setDashboardChartMetric(null); }}>
+              <dialog open className="activity-dialog dashboard-chart-dialog" aria-labelledby="dashboard-chart-title">
+                <div className="detail-heading">
+                  <div>
+                    <p className="eyebrow">{dashboardScopeLabel} · FY {dashboardYear}</p>
+                    <h2 id="dashboard-chart-title">{dashboardChartTitles[dashboardChartMetric].title}</h2>
+                    <p className="detail-subtitle">Financial charts use the selected program and fiscal year; activity charts also follow the activity-status filter.</p>
+                  </div>
+                  <button className="icon-button" aria-label="Close chart" onClick={() => setDashboardChartMetric(null)}><X size={17} /></button>
+                </div>
+                <div className="dashboard-chart-dialog-actions">
+                  <button className="button secondary" onClick={() => downloadDashboardChart("csv")}><Download size={15} /> Export data (CSV)</button>
+                  <button className="button secondary" onClick={() => downloadDashboardChart("svg")}><Download size={15} /> Export chart (SVG)</button>
+                </div>
+                {dashboardChartData.length ? <>
+                  <div className="dashboard-dialog-chart" aria-label={`${dashboardChartTitles[dashboardChartMetric].title} bar chart`}>
+                    {dashboardChartData.map((row) => {
+                      const maxValue = Math.max(1, ...dashboardChartData.map((item) => item.value));
+                      const valueLabel = dashboardChartTitles[dashboardChartMetric].unit === "currency" ? formatDashboardCurrency(row.value) : row.value.toLocaleString();
+                      return <button type="button" className="dashboard-dialog-chart-row" key={row.label} title={systemRole === "superadmin" && dashboardProgramFilter === "all" ? `Filter dashboard to ${row.label}` : row.label} onClick={() => {
+                        if (systemRole !== "superadmin" || dashboardProgramFilter !== "all") return;
+                        const selectedProgram = programOptions.find((item) => item.acronym === row.label);
+                        if (selectedProgram) setDashboardProgramFilter(selectedProgram.id);
+                      }}>
+                        <span title={row.label}>{row.label}</span>
+                        <span className="dashboard-dialog-chart-track"><i style={{ width: `${row.value > 0 ? Math.max(1, row.value / maxValue * 100) : 0}%` }} /></span>
+                        <b>{valueLabel}</b>
+                      </button>;
+                    })}
+                  </div>
+                </> : <div className="empty-state">No chart data is available for the selected filters.</div>}
+                {["totalActivities", "completedActivities", "notCompletedActivities", "overdueActivities", "activityBudget", "obligations"].includes(dashboardChartMetric) && (
+                  <section className="dashboard-drilldown" aria-label="Activities included in this chart">
+                    <div className="dashboard-drilldown-heading">
+                      <div><h3>Activities included</h3><p>{dashboardChartActivities.length} matching activities · Select a row to open its details.</p></div>
+                    </div>
+                    {dashboardChartActivities.length ? <div className="dashboard-drilldown-list">
+                      {dashboardChartActivities.map((activity) => {
+                        const activityProgram = programOptions.find((item) => item.id === activity.programId);
+                        const progress = getDashboardActivityProgress(activity);
+                        return <button type="button" className="dashboard-drilldown-row" key={`${activity.programId ?? ""}:${activity.id}`} onClick={() => openDashboardActivity(activity)}>
+                          <span className="dashboard-drilldown-main"><strong>{activity.name}</strong>                                                    <small>{activity.location || "No location"} · {formatActivitySchedule(activity)}{systemRole === "superadmin" ? ` · ${activityProgram?.acronym ?? "Program"}` : ""}</small></span>
+                          <span className="dashboard-drilldown-status">{activity.status}</span>
+                          <span className="dashboard-drilldown-finance"><small>Budget</small><b>{formatDashboardCurrency(activity.budget)}</b></span>
+                          <span className="dashboard-drilldown-finance"><small>Obligations</small><b>{formatDashboardCurrency(activity.spent)}</b></span>
+                          <span className="dashboard-drilldown-progress"><small>{progress}% complete</small><span><i style={{ width: `${progress}%` }} /></span></span>
+                        </button>;
+                      })}
+                    </div> : <div className="empty-state">No activities match this card and the selected filters.</div>}
+                  </section>
+                )}
+              </dialog>
+            </div>
+          )}
+          {activeTab === "dashboard" && dashboardStatusDialog && (
+            <div className="dialog-overlay dashboard-chart-overlay" onClick={(event) => { if (event.target === event.currentTarget) setDashboardStatusDialog(null); }}>
+              <dialog open className="activity-dialog dashboard-chart-dialog dashboard-status-dialog" aria-labelledby="dashboard-status-dialog-title">
+                <div className="detail-heading">
+                  <div>
+                    <p className="eyebrow">{dashboardScopeLabel} · FY {dashboardYear}</p>
+                    <h2 id="dashboard-status-dialog-title">{dashboardStatusDialog} activities</h2>
+                    <p className="detail-subtitle">{dashboardStatusDialogActivities.length} activities with this status. Select one to view its details.</p>
+                  </div>
+                  <button className="icon-button" aria-label="Close activity status dialog" onClick={() => setDashboardStatusDialog(null)}><X size={17} /></button>
+                </div>
+                {dashboardStatusDialogActivities.length ? <div className="dashboard-drilldown-list">
+                  {dashboardStatusDialogActivities.map((activity) => {
+                    const activityProgram = programOptions.find((item) => item.id === activity.programId);
+                    const progress = getDashboardActivityProgress(activity);
+                    return <button type="button" className="dashboard-drilldown-row" key={`${activity.programId ?? ""}:${activity.id}`} onClick={() => openDashboardActivity(activity)}>
+                      <span className="dashboard-drilldown-main"><strong>{activity.name}</strong><small>{activity.location || "No location"} · {formatActivitySchedule(activity)}{systemRole === "superadmin" ? ` · ${activityProgram?.acronym ?? "Program"}` : ""}</small></span>
+                      <span className="dashboard-drilldown-status">{activity.status}</span>
+                      <span className="dashboard-drilldown-finance"><small>Budget</small><b>{formatDashboardCurrency(activity.budget)}</b></span>
+                      <span className="dashboard-drilldown-finance"><small>Obligations</small><b>{formatDashboardCurrency(activity.spent)}</b></span>
+                      <span className="dashboard-drilldown-progress"><small>{progress}% complete</small><span><i style={{ width: `${progress}%` }} /></span></span>
+                    </button>;
+                  })}
+                </div> : <div className="empty-state">No {dashboardStatusDialog.toLowerCase()} activities match this program and fiscal year.</div>}
+              </dialog>
+            </div>
+          )}
+          {activeTab === "dashboard" && dashboardActivityDialogTarget && showActivityDialog && (
+            <div className="dialog-overlay" onClick={(event) => { if (event.target !== event.currentTarget) return; setSelectedActivityId(""); setDashboardActivityDialogTarget(null); setShowActivityDialog(false); }}>
               <dialog open className="activity-detail activity-dialog dashboard-activity-dialog">
                 <div className="detail-heading">
                   <div>
-                    <p className="eyebrow">Activity overview</p>
-                    <h2>{selectedActivity.name}</h2>
-                    <p className="detail-subtitle">{selectedActivity.location} · {selectedActivity.startDate} to {selectedActivity.endDate}</p>
+                    <p className="eyebrow">{systemRole === "superadmin" ? `${programOptions.find((item) => item.id === dashboardActivityDialogTarget.programId)?.acronym ?? "Program"} · Activity overview` : "Activity overview"}</p>
+                    <h2>{dashboardActivityDialogTarget.name}</h2>
+                    <p className="detail-subtitle">{dashboardActivityDialogTarget.location || "No location"} · {formatActivitySchedule(dashboardActivityDialogTarget)}</p>
                   </div>
-                  <button className="icon-button" aria-label="Close activity" onClick={() => { setSelectedActivityId(""); setShowActivityDialog(false); }}><X size={17} /></button>
+                  <button className="icon-button" aria-label="Close activity" onClick={() => { setSelectedActivityId(""); setDashboardActivityDialogTarget(null); setShowActivityDialog(false); }}><X size={17} /></button>
                 </div>
                 <div className="fund-summary">
-                  <div><small>Status</small><strong>{selectedActivity.status}</strong></div>
-                  <div><small>Approved budget</small><strong>₱{selectedActivity.budget.toLocaleString()}</strong></div>
-                  <div><small>Recorded spending</small><strong>₱{selectedActivity.spent.toLocaleString()}</strong></div>
+                  <div><small>Status</small><strong>{dashboardActivityDialogTarget.status}</strong></div>
+                  <div><small>Approved budget</small><strong>{formatDashboardCurrency(dashboardActivityDialogTarget.budget)}</strong></div>
+                  <div><small>Obligations</small><strong>{formatDashboardCurrency(dashboardActivityDialogTarget.spent)}</strong></div>
                 </div>
-                <div className="dashboard-activity-meta"><span>Current workflow step</span><strong>{getNumberedStep(steps, selectedActivity.currentStep)}</strong>{selectedActivity.currentSubStep && <><span>Current sub-step</span><strong>{(activeSteps.findIndex((step) => step.title === selectedActivity.currentStep) + 1)}.{(selectedActivityStep?.subSteps ?? []).indexOf(selectedActivity.currentSubStep) + 1} {selectedActivity.currentSubStep}</strong></>}</div>
+                <div className="dashboard-activity-meta"><span>Current workflow step</span><strong>{getNumberedStep(dashboardActivityDialogSteps, dashboardActivityDialogTarget.currentStep)}</strong>{dashboardActivityDialogTarget.currentSubStep && <><span>Current sub-step</span><strong>{(dashboardActivityDialogActiveSteps.findIndex((step) => step.title === dashboardActivityDialogTarget.currentStep) + 1)}.{(dashboardActivityDialogCurrentStep?.subSteps ?? []).indexOf(dashboardActivityDialogTarget.currentSubStep) + 1} {dashboardActivityDialogTarget.currentSubStep}</strong></>}</div>
               </dialog>
             </div>
           )}

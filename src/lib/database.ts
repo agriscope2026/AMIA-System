@@ -36,8 +36,9 @@ export type DatabaseActivity = {
   activity_code: string;
   title: string;
   location: string | null;
-  start_date: string;
+  start_date: string | null;
   target_end_date: string | null;
+  fiscal_year: number | null;
   approved_budget: number;
   recorded_spending: number;
   activity_design: string | null;
@@ -67,6 +68,38 @@ export type AnnualProgramAllocation = {
   remarks: string | null;
 };
 
+export type ProcurementPlanType = "APP" | "WFP" | "PPMP";
+export type ProcurementPlanSheet = {
+  id: string;
+  program_id: string;
+  fiscal_year: number;
+  plan_type: ProcurementPlanType;
+  is_continuing: boolean;
+  plan_status: "Indicative" | "Final";
+  version_no: string;
+  created_at: string;
+  updated_at: string;
+};
+export type ProcurementPlanItem = {
+  id: string;
+  plan_id: string;
+  activity_id: string | null;
+  project_title: string;
+  implementing_unit: string;
+  project_description: string;
+  procurement_mode: string;
+  early_procurement_activity: boolean;
+  bid_evaluation_criteria: string;
+  procurement_start: string | null;
+  procurement_end: string | null;
+  source_of_fund: string;
+  estimated_budget: number;
+  procurement_strategy: string;
+  remarks: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ProcurementItem = {
   id: string;
   program_id: string;
@@ -81,6 +114,27 @@ export type ProcurementItem = {
   unit_cost: number;
   delivery_status: string;
   delivery_date: string | null;
+};
+
+export type BeneficiaryRecord = {
+  id: string;
+  program_id: string;
+  activity_id: string | null;
+  beneficiary_name: string | null;
+  beneficiary_code: string | null;
+  municipality: string | null;
+  barangay: string | null;
+  assistance_received: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CalendarDayNote = {
+  program_id: string;
+  note_date: string;
+  note: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type AppProfile = { id: string; full_name: string; email: string; system_role?: "superadmin" | "user" };
@@ -152,6 +206,47 @@ export async function deleteAnnualAllocation(id: string) {
   if (error) throw error;
 }
 
+export async function loadProcurementPlanSheet(programId: string, fiscalYear: number, planType: ProcurementPlanType) {
+  const client = requireClient();
+  const { data: sheet, error: sheetError } = await client.from("program_procurement_plans")
+    .select("*").eq("program_id", programId).eq("fiscal_year", fiscalYear).eq("plan_type", planType).maybeSingle();
+  if (sheetError) throw sheetError;
+  if (!sheet) return { sheet: null, items: [] as ProcurementPlanItem[] };
+  const { data: items, error: itemsError } = await client.from("program_procurement_plan_items")
+    .select("*").eq("plan_id", sheet.id).order("created_at");
+  if (itemsError) throw itemsError;
+  return { sheet: sheet as ProcurementPlanSheet, items: (items ?? []) as ProcurementPlanItem[] };
+}
+
+export async function loadProcurementPlanYears(programId: string) {
+  const { data, error } = await requireClient().from("program_procurement_plans")
+    .select("fiscal_year").eq("program_id", programId);
+  if (error) throw error;
+  return Array.from(new Set((data ?? []).map((row) => Number(row.fiscal_year)))).sort((a, b) => b - a);
+}
+
+export async function saveProcurementPlanSheet(values: Pick<ProcurementPlanSheet, "program_id" | "fiscal_year" | "plan_type" | "is_continuing" | "plan_status" | "version_no">) {
+  const { data, error } = await requireClient().from("program_procurement_plans")
+    .upsert(values, { onConflict: "program_id,fiscal_year,plan_type" }).select().single();
+  if (error) throw error;
+  return data as ProcurementPlanSheet;
+}
+
+export async function saveProcurementPlanItem(values: Partial<ProcurementPlanItem> & Pick<ProcurementPlanItem, "plan_id" | "project_title" | "implementing_unit" | "project_description" | "procurement_mode" | "early_procurement_activity" | "bid_evaluation_criteria" | "procurement_start" | "procurement_end" | "source_of_fund" | "estimated_budget" | "procurement_strategy" | "remarks">) {
+  const { id, ...fields } = values;
+  const query = id
+    ? requireClient().from("program_procurement_plan_items").update(fields).eq("id", id).select().single()
+    : requireClient().from("program_procurement_plan_items").insert(fields).select().single();
+  const { data, error } = await query;
+  if (error) throw error;
+  return data as ProcurementPlanItem;
+}
+
+export async function deleteProcurementPlanItem(id: string) {
+  const { error } = await requireClient().from("program_procurement_plan_items").delete().eq("id", id);
+  if (error) throw error;
+}
+
 export async function loadProcurementItems(activityId: string) {
   const { data, error } = await requireClient().from("activity_procurement_items")
     .select("*").eq("activity_id", activityId).order("created_at");
@@ -174,9 +269,89 @@ export async function deleteProcurementItem(id: string) {
   if (error) throw error;
 }
 
+export async function loadBeneficiaries(programId?: string) {
+  const client = requireClient();
+  const pageSize = 500;
+  const records: BeneficiaryRecord[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    let query = client.from("program_beneficiaries").select("*")
+      .order("created_at", { ascending: false }).order("id", { ascending: true });
+    if (programId) query = query.eq("program_id", programId);
+    const { data, error } = await query.range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const page = (data ?? []) as BeneficiaryRecord[];
+    records.push(...page);
+    if (page.length < pageSize) return records;
+  }
+}
+
+export async function saveBeneficiary(values: Partial<BeneficiaryRecord> & Pick<BeneficiaryRecord, "program_id" | "assistance_received">) {
+  const fields = { ...values };
+  delete fields.id;
+  delete fields.created_at;
+  delete fields.updated_at;
+  const query = values.id
+    ? requireClient().from("program_beneficiaries").update({ ...fields, updated_at: new Date().toISOString() }).eq("id", values.id).select().single()
+    : requireClient().from("program_beneficiaries").insert(fields).select().single();
+  const { data, error } = await query;
+  if (error) throw error;
+  return data as BeneficiaryRecord;
+}
+
+export async function deleteBeneficiary(id: string) {
+  const { error } = await requireClient().from("program_beneficiaries").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function loadCalendarDayNotes(programId: string, startDate: string, endDate: string) {
+  const { data, error } = await requireClient().from("program_calendar_day_notes").select("*")
+    .eq("program_id", programId).gte("note_date", startDate).lte("note_date", endDate).order("note_date");
+  if (error) throw error;
+  return (data ?? []) as CalendarDayNote[];
+}
+
+export async function saveCalendarDayNote(programId: string, noteDate: string, note: string) {
+  const client = requireClient();
+  if (!note.trim()) {
+    const { error } = await client.from("program_calendar_day_notes").delete()
+      .eq("program_id", programId).eq("note_date", noteDate);
+    if (error) throw error;
+    return null;
+  }
+
+  const { data, error } = await client.from("program_calendar_day_notes")
+    .upsert({ program_id: programId, note_date: noteDate, note: note.trim(), updated_at: new Date().toISOString() }, { onConflict: "program_id,note_date" })
+    .select().single();
+  if (error) throw error;
+  return data as CalendarDayNote;
+}
+
+export async function saveCalendarActivitySchedule(activityId: string, programId: string, startDate: string, endDate: string) {
+  const client = requireClient();
+  const { data: planItem, error: lookupError } = await client.from("program_procurement_plan_items")
+    .select("id").eq("activity_id", activityId).maybeSingle();
+  if (lookupError) throw lookupError;
+
+  if (planItem) {
+    const { error } = await client.from("program_procurement_plan_items")
+      .update({ procurement_start: startDate || null, procurement_end: endDate || null, updated_at: new Date().toISOString() })
+      .eq("id", planItem.id);
+    if (error) throw error;
+    return;
+  }
+
+  const { error } = await client.from("program_activities").update({
+    start_date: startDate || null,
+    target_end_date: endDate || null,
+    ...(startDate ? { fiscal_year: Number(startDate.slice(0, 4)) } : {}),
+    updated_at: new Date().toISOString(),
+  }).eq("id", activityId).eq("program_id", programId);
+  if (error) throw error;
+}
+
 export async function loadAdminDatabaseTables() {
   const client = requireClient();
-  const tableNames = ["programs", "workflow_steps", "program_activities", "program_annual_allocations", "activity_procurement_items", "profiles", "program_members", "audit_logs"];
+  const tableNames = ["programs", "workflow_steps", "program_activities", "program_beneficiaries", "program_annual_allocations", "activity_procurement_items", "program_procurement_plans", "program_procurement_plan_items", "profiles", "program_members", "audit_logs"];
   const entries = await Promise.all(tableNames.map(async (tableName) => {
     const { data, error } = await client.from(tableName).select("*").limit(500);
     if (error) throw new Error(`Could not load ${tableName}: ${error.message}`);
