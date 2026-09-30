@@ -1,5 +1,5 @@
 -- Optional APP-first sample dataset for a NON-PRODUCTION Supabase project.
--- Apply the migrations, including the latest app_activity_calendar migration,
+-- Apply the migrations, including the finance_grid_persistence migration,
 -- before running this script in the Supabase SQL Editor.
 -- This seed is additive and rerunnable; it does not delete existing records.
 -- All program names, projects, dates, and financial amounts are fictional.
@@ -121,12 +121,18 @@ with sample_rows (
     )
 )
 insert into public.program_procurement_plan_items (
-  plan_id, project_title, implementing_unit, project_description,
+  plan_id, row_order, project_title, implementing_unit, project_description,
   procurement_mode, early_procurement_activity, bid_evaluation_criteria,
   procurement_start, procurement_end, source_of_fund, estimated_budget,
   procurement_strategy, remarks
 )
-select plan.id, sample.project_title, sample.implementing_unit,
+select plan.id,
+       coalesce((
+         select max(existing.row_order) + 1
+         from public.program_procurement_plan_items existing
+         where existing.plan_id = plan.id
+       ), 0) + row_number() over (partition by plan.id order by sample.project_title) - 1,
+       sample.project_title, sample.implementing_unit,
        sample.project_description, sample.procurement_mode,
        sample.early_procurement_activity, sample.bid_evaluation_criteria,
        sample.procurement_start, sample.procurement_end,
@@ -158,6 +164,7 @@ left join public.program_procurement_plans plan
  and plan.plan_type = 'APP'
  and plan.fiscal_year = 2026
 left join public.program_procurement_plan_items item on item.plan_id = plan.id
+  and item.deleted_at is null
 where program.acronym in ('AMIA', '4K')
 group by program.acronym, plan.fiscal_year
 order by program.acronym;

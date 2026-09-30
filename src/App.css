@@ -2114,3 +2114,652 @@
   background-color: #263b30 !important;
   color: #b8dfc2 !important;
 }
+.finance-univer-sheet {
+  display: grid;
+  min-width: 0;
+  gap: 9px;
+}
+.finance-univer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.finance-univer-toolbar > div:first-child {
+  display: grid;
+  gap: 3px;
+  color: #355847;
+  font-size: 12px;
+}
+.finance-univer-toolbar > div:first-child span {
+  color: #87958d;
+  font-size: 10px;
+}
+.finance-univer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.finance-univer-file-input {
+  display: none;
+}
+.finance-univer-file-message,
+.finance-univer-loading {
+  margin: 0;
+  color: #52675b;
+  font-size: 12px;
+}
+.finance-univer-host {
+  width: 100%;
+  height: min(70vh, 760px);
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid #dce5df;
+  border-radius: 6px;
+  background: #fff;
+}
+.finance-univer-sheet:fullscreen {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100vh;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  overflow: auto;
+  padding: 16px;
+  background: var(--ui-canvas, #f3f6f8);
+}
+.finance-univer-sheet:fullscreen .finance-univer-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.finance-univer-sheet:fullscreen .finance-univer-host {
+  height: 100%;
+  min-height: 0;
+}
+.finance-fullscreen-toggle {
+  min-width: 142px;
+  min-height: 48px !important;
+  font-size: 15px !important;
+}
+:root[data-theme="dark"] .finance-univer-toolbar > div:first-child {
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .finance-univer-toolbar > div:first-child span {
+  color: #aebdb4;
+}
+:root[data-theme="dark"] .finance-univer-host {
+  border-color: #394a42;
+}
+:root[data-theme="dark"] .finance-univer-file-message,
+:root[data-theme="dark"] .finance-univer-loading {
+  color: #d5e0da;
+}
+
+:root {
+  --ui-font-family: Inter, "Segoe UI", Arial, sans-serif;
+  --ui-font-body: 16px;
+  --ui-font-control: 14px;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 24px;
+  --ui-space-6: 32px;
+  --ui-canvas: #f3f6f8;
+  --ui-surface: #ffffff;
+  --ui-surface-muted: #f7f9fa;
+  --ui-border: #d5e0e5;
+  --ui-ink: #19313d;
+  --ui-muted: #506873;
+  --ui-primary: #155568;
+  --ui-primary-hover: #0e4354;
+  --ui-focus: #2581a0;
+  --ui-radius: 10px;
+  --ui-shadow: 0 3px 12px rgba(25, 49, 61, 0.06);
+}
+
+:root[data-theme="dark"] {
+  --ui-canvas: #121d23;
+  --ui-surface: #1b2a31;
+  --ui-surface-muted: #22343c;
+  --ui-border: #3b505a;
+  --ui-ink: #edf3f5;
+  --ui-muted: #bdcbd0;
+  --ui-primary: #23697a;
+  --ui-primary-hover: #2d7788;
+  --ui-focus: #8acbd7;
+  --ui-shadow: 0 3px 14px rgba(0, 0, 0, 0.2);
+}
+
+.app-shell {
+  background: var(--ui-canvas);
+  color: var(--ui-ink);
+  font-family: var(--ui-font-family);
+  font-size: var(--ui-font-body);
+}
+
+.app-shell .topbar {
+  min-height: 72px;
+  height: auto;
+  padding: 10px clamp(16px, 3vw, 40px);
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+}
+
+.app-shell .breadcrumbs,
+.app-shell .breadcrumbs strong {
+  color: var(--ui-ink);
+}
+
+.app-shell .content-wrap {
+  box-sizing: border-box;
+  width: min(94%, 1480px);
+  padding: var(--ui-space-6) 0 64px;
+}
+
+.app-shell .page-heading h1 {
+  color: var(--ui-ink);
+  font-family: var(--app-font), system-ui, sans-serif;
+  font-size: clamp(28px, 3vw, 36px);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.app-shell p:not(.eyebrow) {
+  color: var(--ui-muted);
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.app-shell .eyebrow {
+  color: var(--ui-primary);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.app-shell .button,
+.app-shell button:not(.icon-button):not(.quiet-button):not(.timeline-step-toggle) {
+  min-height: 44px;
+  border-radius: 7px;
+  font-size: var(--ui-font-control);
+  font-weight: 600;
+}
+
+.app-shell .button {
+  padding: 10px var(--ui-space-4);
+}
+
+.app-shell .button.primary {
+  background: var(--ui-primary);
+  box-shadow: none;
+}
+
+.app-shell .button.primary:hover {
+  background: var(--ui-primary-hover);
+}
+
+.app-shell .button.secondary {
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-primary);
+}
+
+.app-shell .icon-button,
+.app-shell .header-avatar {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  border-radius: 8px;
+}
+
+.app-shell .icon-button {
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+}
+
+.app-shell .header-avatar {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--ui-border);
+  font-size: 13px;
+}
+
+.app-shell .top-nav-item {
+  min-height: 44px;
+  padding: 8px 11px;
+  border-radius: 6px;
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+
+.app-shell .top-nav-item:hover,
+.app-shell .top-nav-item.active {
+  color: var(--ui-primary);
+  background: var(--ui-surface-muted);
+}
+
+.app-shell input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]),
+.app-shell select,
+.app-shell textarea {
+  min-height: 44px;
+  border-color: var(--ui-border);
+  border-radius: 7px;
+  background-color: var(--ui-surface);
+  color: var(--ui-ink);
+  font-size: 16px;
+}
+
+.app-shell label {
+  color: var(--ui-ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.app-shell :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+
+.app-shell :is(.builder-panel, .preview-card, .step-detail, .database-browser, .finance-card, .finance-toolbar, .dashboard-panel, .dashboard-filter-bar) {
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  box-shadow: var(--ui-shadow);
+}
+
+.app-shell :is(.builder-panel, .step-detail, .database-browser, .beneficiary-page, .activity-panel, .calendar-panel, .dashboard-panel, .dashboard-filter-bar) {
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+}
+
+.app-shell dialog[open] {
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  box-shadow: 0 18px 60px rgba(10, 25, 34, 0.2);
+}
+
+.app-shell dialog::backdrop {
+  background: rgba(12, 30, 39, 0.45);
+}
+
+.app-shell dialog[open].allocation-dialog {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .draft-pill {
+  color: #775d22;
+  font-size: 13px;
+}
+
+.app-shell .empty-state {
+  min-height: 64px;
+  padding: 18px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-surface-muted);
+  color: var(--ui-ink);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.app-shell :is(.activity-table, .beneficiary-table, .finance-table, .app-plan-table) {
+  color: var(--ui-ink);
+  font-size: 14px;
+}
+
+.app-shell :is(.activity-table, .beneficiary-table, .finance-table, .app-plan-table) th {
+  background: var(--ui-surface-muted);
+  color: var(--ui-ink);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.app-shell :is(.activity-table, .beneficiary-table, .finance-table, .app-plan-table) td {
+  color: var(--ui-ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.app-shell :is(.activity-table, .beneficiary-table, .finance-table, .app-plan-table) th,
+.app-shell :is(.activity-table, .beneficiary-table, .finance-table, .app-plan-table) td {
+  border-color: var(--ui-border);
+}
+
+.finance-page {
+  gap: 16px;
+}
+
+.finance-toolbar {
+  align-items: flex-end;
+  padding: 18px 20px;
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  box-shadow: var(--ui-shadow);
+}
+
+.finance-toolbar h2 {
+  color: var(--ui-ink);
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.finance-toolbar .eyebrow {
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.fiscal-year-select {
+  color: var(--ui-ink);
+  font-size: 14px;
+}
+
+.finance-summary-grid {
+  gap: 12px;
+}
+
+.finance-summary-grid article {
+  min-height: 106px;
+  box-sizing: border-box;
+  align-content: center;
+  gap: 5px;
+  padding: 16px;
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+  box-shadow: var(--ui-shadow);
+}
+
+.app-shell .finance-page .finance-summary-grid article {
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+}
+
+.finance-summary-grid small {
+  color: var(--ui-muted);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.app-shell .finance-summary-grid small {
+  font-size: 14px !important;
+}
+
+.finance-summary-grid span {
+  display: block;
+  grid-column: 1 / -1;
+  grid-row: auto;
+  color: var(--ui-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.finance-summary-grid strong {
+  grid-column: 1 / -1;
+  grid-row: auto;
+  color: var(--ui-ink);
+  font-size: clamp(19px, 2vw, 24px);
+  text-align: left;
+}
+
+.finance-sheet-tabs {
+  flex-wrap: wrap;
+  gap: 8px;
+  border: 0;
+}
+
+.finance-sheet-tab {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 15px;
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-surface);
+  color: var(--ui-muted);
+  font-size: 14px;
+  text-align: left;
+}
+
+.finance-sheet-tab span {
+  color: inherit;
+}
+
+.finance-sheet-tab small {
+  display: inline-grid;
+  min-width: 32px;
+  min-height: 28px;
+  place-items: center;
+  border-radius: 5px;
+  background: var(--ui-surface-muted);
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.finance-sheet-tab.active {
+  border-color: var(--ui-primary);
+  background: var(--ui-surface);
+  color: var(--ui-primary);
+  box-shadow: inset 0 -3px var(--ui-primary);
+}
+
+.finance-sheet-tab.active small {
+  background: var(--ui-primary);
+  color: #fff;
+}
+
+.finance-help {
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+  box-shadow: var(--ui-shadow);
+}
+
+.finance-help summary {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  padding: 0 16px;
+  color: var(--ui-primary);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.finance-help-content {
+  padding: 0 20px 16px;
+  border-top: 1px solid var(--ui-border);
+}
+
+.finance-help-content p {
+  margin: 14px 0 8px;
+}
+
+.finance-help-content ol {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 22px;
+  color: var(--ui-ink);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.finance-univer-sheet {
+  gap: 14px;
+}
+
+.finance-univer-toolbar {
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+
+.finance-univer-toolbar > div:first-child {
+  gap: 5px;
+  color: var(--ui-ink);
+  font-size: 16px;
+}
+
+.finance-univer-toolbar > div:first-child span {
+  color: var(--ui-muted);
+  font-size: 14px;
+}
+
+.finance-univer-actions {
+  gap: 8px;
+}
+
+.finance-univer-file-message,
+.finance-univer-loading {
+  color: var(--ui-muted);
+  font-size: 15px;
+}
+
+.finance-univer-host {
+  min-height: 480px;
+  border-color: var(--ui-border);
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+
+.finance-univer-sheet:fullscreen {
+  background: var(--ui-canvas);
+}
+
+.finance-univer-sheet:fullscreen .finance-univer-host {
+  min-height: 0;
+}
+
+.finance-fullscreen-toggle {
+  flex: 0 0 auto;
+  gap: 9px;
+  box-shadow: 0 2px 5px rgba(14, 67, 84, 0.18);
+}
+
+:root[data-theme="dark"] .app-shell .finance-toolbar,
+:root[data-theme="dark"] .app-shell .finance-card,
+:root[data-theme="dark"] .app-shell .finance-summary-grid article,
+:root[data-theme="dark"] .app-shell .finance-help,
+:root[data-theme="dark"] .app-shell .finance-univer-toolbar,
+:root[data-theme="dark"] .app-shell .finance-sheet-tab,
+:root[data-theme="dark"] .app-shell .finance-univer-host,
+:root[data-theme="dark"] .app-shell .finance-page .finance-summary-grid article:nth-child(n) {
+  border-color: var(--ui-border);
+  background-color: var(--ui-surface);
+  color: var(--ui-ink);
+}
+
+:root[data-theme="dark"] .app-shell .finance-sheet-tab.active small {
+  background: var(--ui-primary);
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .app-shell .button.primary {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .app-shell .button.primary:hover {
+  background: var(--ui-primary-hover);
+}
+
+@media (max-width: 900px) {
+  .finance-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-shell .topbar {
+    padding-inline: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell .content-wrap {
+    width: min(100% - 28px, 1480px);
+    padding-top: var(--ui-space-5);
+  }
+
+  .app-shell .topbar {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .app-shell .top-actions {
+    flex-wrap: wrap;
+  }
+
+  .finance-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .finance-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .finance-toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .finance-sheet-tab {
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+
+  .finance-univer-actions {
+    width: 100%;
+  }
+
+  .finance-univer-actions .button {
+    flex: 1 1 150px;
+  }
+
+  .finance-univer-actions .finance-fullscreen-toggle {
+    flex-basis: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell *,
+  .app-shell *::before,
+  .app-shell *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+:root[data-theme="dark"] .app-shell .draft-pill {
+  color: #e6c978;
+}
+
+:root[data-theme="dark"] .app-shell .empty-state {
+  border-color: var(--ui-border);
+  background: var(--ui-surface-muted);
+  color: var(--ui-ink);
+}
+
+:root[data-theme="dark"] .app-shell :is(.activity-table, .beneficiary-table, .finance-table, .app-plan-table) th {
+  background: var(--ui-surface-muted);
+  color: var(--ui-ink);
+}
+
+:root[data-theme="dark"] .app-shell :is(.activity-table, .beneficiary-table, .finance-table, .app-plan-table) td {
+  color: var(--ui-ink);
+}

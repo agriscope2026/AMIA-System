@@ -85,6 +85,9 @@ export type ProcurementPlanItem = {
   id: string;
   plan_id: string;
   activity_id: string | null;
+  row_order: number;
+  version: number;
+  deleted_at: string | null;
   project_title: string;
   implementing_unit: string;
   project_description: string;
@@ -94,13 +97,21 @@ export type ProcurementPlanItem = {
   procurement_start: string | null;
   procurement_end: string | null;
   source_of_fund: string;
-  estimated_budget: number;
+  estimated_budget: string | number;
   procurement_strategy: string;
   remarks: string;
   created_at: string;
   updated_at: string;
   custom_values?: Record<string, unknown>;
+  formula_values: Record<string, string>;
 };
+
+export function financeGridCustomValues(item: ProcurementPlanItem) {
+  return {
+    ...(item.custom_values ?? {}),
+    ...Object.fromEntries(Object.entries(item.formula_values ?? {}).map(([key, formula]) => [`__formula__${key}`, formula])),
+  };
+}
 
 export type ProcurementItem = {
   id: string;
@@ -241,6 +252,12 @@ export async function loadFinanceSheetPreferences(programId: string, fiscalYear:
 }
 
 export async function saveFinanceSheetPreferences(values: Pick<FinanceSheetPreferences, "program_id" | "fiscal_year" | "sheet_type" | "custom_columns" | "view_options">) {
+  if (new TextEncoder().encode(JSON.stringify(values.view_options)).byteLength > 1048576) {
+    throw new Error("Financial sheet settings cannot exceed 1 MiB.");
+  }
+  if (new TextEncoder().encode(JSON.stringify(values.custom_columns)).byteLength > 262144) {
+    throw new Error("Financial column settings cannot exceed 256 KiB.");
+  }
   const { data, error } = await requireClient().from("program_finance_sheet_preferences")
     .upsert(values, { onConflict: "program_id,fiscal_year,sheet_type" }).select().single();
   if (error) throw error;
@@ -266,10 +283,48 @@ export async function loadProcurementPlanSheet(programId: string, fiscalYear: nu
     .select("*").eq("program_id", programId).eq("fiscal_year", fiscalYear).eq("plan_type", planType).maybeSingle();
   if (sheetError) throw sheetError;
   if (!sheet) return { sheet: null, items: [] as ProcurementPlanItem[] };
-  const { data: items, error: itemsError } = await client.from("program_procurement_plan_items")
-    .select("*").eq("plan_id", sheet.id).order("created_at");
-  if (itemsError) throw itemsError;
-  return { sheet: sheet as ProcurementPlanSheet, items: (items ?? []) as ProcurementPlanItem[] };
+  const items: ProcurementPlanItem[] = [];
+  for (let pageOffset = 0; ; pageOffset += 250) {
+    const page = await loadProcurementPlanPage(sheet.id, { pageSize: 250, pageOffset });
+    items.push(...page);
+    if (page.length < 250) break;
+  }
+  return { sheet: sheet as ProcurementPlanSheet, items };
+}
+
+export async function loadProcurementPlanPage(
+  planId: string,
+  options: {
+    pageSize?: number;
+    pageOffset?: number;
+    searchText?: string;
+    sortKey?: "row_order" | "project_title" | "implementing_unit" | "estimated_budget" | "procurement_start" | "procurement_end" | "updated_at";
+    sortDirection?: "asc" | "desc";
+  } = {},
+) {
+  const { data, error } = await requireClient().rpc("finance_page_plan_items", {
+    target_plan_id: planId,
+    page_size: options.pageSize ?? 100,
+    page_offset: options.pageOffset ?? 0,
+    search_text: options.searchText?.trim() || null,
+    sort_key: options.sortKey ?? "row_order",
+    sort_direction: options.sortDirection ?? "asc",
+  });
+  if (error) throw error;
+  return (data ?? []) as ProcurementPlanItem[];
+}
+
+export async function reorderProcurementPlanItems(planId: string, orderedIds: string[]) {
+  const client = requireClient();
+  const { error } = await client.rpc("finance_reorder_plan_items", {
+    target_plan_id: planId,
+    ordered_ids: orderedIds,
+  });
+  if (error) throw error;
+  const { data, error: loadError } = await client.from("program_procurement_plan_items")
+    .select("id,row_order,version").eq("plan_id", planId).is("deleted_at", null);
+  if (loadError) throw loadError;
+  return (data ?? []) as Pick<ProcurementPlanItem, "id" | "row_order" | "version">[];
 }
 
 export async function loadProcurementPlanYears(programId: string) {
@@ -286,19 +341,87 @@ export async function saveProcurementPlanSheet(values: Pick<ProcurementPlanSheet
   return data as ProcurementPlanSheet;
 }
 
-export async function saveProcurementPlanItem(values: Partial<ProcurementPlanItem> & Pick<ProcurementPlanItem, "plan_id" | "project_title" | "implementing_unit" | "project_description" | "procurement_mode" | "early_procurement_activity" | "bid_evaluation_criteria" | "procurement_start" | "procurement_end" | "source_of_fund" | "estimated_budget" | "procurement_strategy" | "remarks">) {
-  const { id, ...fields } = values;
-  const query = id
-    ? requireClient().from("program_procurement_plan_items").update(fields).eq("id", id).select().single()
-    : requireClient().from("program_procurement_plan_items").insert(fields).select().single();
-  const { data, error } = await query;
-  if (error) throw error;
-  return data as ProcurementPlanItem;
+export type ProcurementPlanItemSave = Partial<ProcurementPlanItem> & Pick<ProcurementPlanItem, "plan_id">;
+
+function financePlanItemOperation(values: ProcurementPlanItemSave) {
+  const { id, version, custom_values: customValues, formula_values: formulaValues } = values;
+  if (id && typeof version !== "number") {
+    throw new Error("This finance row has no version. Reload the sheet before saving.");
+  }
+  const separatedValues = splitFinanceCellMetadata(customValues ?? {});
+  const allowedFields = [
+    "project_title", "implementing_unit", "project_description", "procurement_mode",
+    "early_procurement_activity", "bid_evaluation_criteria", "procurement_start",
+    "procurement_end", "source_of_fund", "estimated_budget", "procurement_strategy", "remarks",
+  ] as const;
+  const fields: Record<string, unknown> = {};
+  for (const field of allowedFields) {
+    if (field in values) fields[field] = values[field];
+  }
+  return {
+    op: id ? "update" : "create",
+    ...(id ? { id, expected_version: version } : {}),
+    fields: {
+      ...fields,
+      custom_values: separatedValues.customValues,
+      formula_values: { ...separatedValues.formulaValues, ...(formulaValues ?? {}) },
+    },
+  };
 }
 
-export async function deleteProcurementPlanItem(id: string) {
-  const { error } = await requireClient().from("program_procurement_plan_items").delete().eq("id", id);
+export async function saveProcurementPlanItem(values: ProcurementPlanItemSave) {
+  const [savedItem] = await saveProcurementPlanItemsBatch(values.plan_id, [values]);
+  if (!savedItem) throw new Error("The finance row save returned no database record.");
+  return savedItem;
+}
+
+export async function saveProcurementPlanItemsBatch(planId: string, values: ProcurementPlanItemSave[]) {
+  if (values.length < 1 || values.length > 250) {
+    throw new Error("A finance batch must contain between 1 and 250 rows.");
+  }
+  if (values.some((value) => value.plan_id !== planId)) {
+    throw new Error("A finance batch can only update rows in one sheet.");
+  }
+  const { data, error } = await requireClient().rpc("finance_apply_plan_item_batch", {
+    target_plan_id: planId,
+    operations: values.map(financePlanItemOperation),
+  });
   if (error) throw error;
+  return (data ?? []) as ProcurementPlanItem[];
+}
+
+export async function deleteProcurementPlanItemsBatch(
+  planId: string,
+  rows: Array<Pick<ProcurementPlanItem, "id" | "version">>,
+) {
+  if (rows.length < 1 || rows.length > 250) {
+    throw new Error("A finance delete batch must contain between 1 and 250 rows.");
+  }
+  const { error } = await requireClient().rpc("finance_apply_plan_item_batch", {
+    target_plan_id: planId,
+    operations: rows.map(({ id, version }) => ({ op: "delete", id, expected_version: version })),
+  });
+  if (error) throw error;
+}
+
+export async function deleteProcurementPlanItem(planId: string, id: string, expectedVersion: number) {
+  await deleteProcurementPlanItemsBatch(planId, [{ id, version: expectedVersion }]);
+}
+
+function splitFinanceCellMetadata(customValues: Record<string, unknown>) {
+  const values: Record<string, unknown> = {};
+  const formulaValues: Record<string, string> = {};
+  for (const [key, value] of Object.entries(customValues)) {
+    if (key.startsWith("__formula__")) {
+      if (typeof value !== "string" || !value.startsWith("=")) {
+        throw new Error(`Invalid saved formula for ${key.slice("__formula__".length)}.`);
+      }
+      formulaValues[key.slice("__formula__".length)] = value;
+    } else {
+      values[key] = value;
+    }
+  }
+  return { customValues: values, formulaValues };
 }
 
 export async function loadProcurementItems(activityId: string) {

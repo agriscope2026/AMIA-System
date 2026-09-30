@@ -8,14 +8,24 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "node --experimental-strip-types --test",
     "preview": "vite preview"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.117.2",
+    "@univerjs/preset-sheets-core": "1.0.3",
+    "@univerjs/preset-sheets-filter": "1.0.3",
+    "@univerjs/preset-sheets-sort": "1.0.3",
+    "@univerjs/presets": "1.0.3",
+    "exceljs": "4.4.0",
     "lucide-react": "^1.47.0",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "rxjs": "7.8.2"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, GripVertical, Plus, Save, Settings2, Trash2 } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, GripVertical, Plus, Redo2, Save, Settings2, Trash2, Undo2 } from "lucide-react";
 import type { FinanceSheetCustomColumn } from "../lib/database";
 import { evaluateFinanceFormula } from "../lib/finance-formulas";
+import { sortFinanceRows } from "../lib/finance-grid-model";
+import { useUndoRedo } from "../lib/finance-grid-history";
 import "../App.css";
 import type { ClipboardEvent, KeyboardEvent } from "react";
+
+const FinanceUniverGrid = lazy(() => import("./FinanceUniverGrid").then(({ FinanceUniverGrid: grid }) => ({ default: grid })));
 
 export type FinanceGridColumn = {
   key: string;
@@ -30,8 +34,17 @@ export type FinanceGridOptions = {
   columnFilterKey?: string;
   columnFilterText?: string;
   columnWidths?: Record<string, number>;
+  columnOrder?: string[];
+  rowOrder?: string[];
+  rowHeights?: Record<string, number>;
   wrapText?: boolean;
   columnStyles?: Record<string, Pick<FinanceGridColumn, "bold" | "color" | "background" | "numberFormat">>;
+};
+
+export type FinanceGridSave = {
+  row: FinanceGridRow;
+  values: Record<string, unknown>;
+  customValues: Record<string, unknown>;
 };
 
 type Props = {
@@ -43,8 +56,11 @@ type Props = {
   onOptionsChange: (options: FinanceGridOptions) => void;
   onColumnsChange: (columns: FinanceSheetCustomColumn[]) => void;
   onSave: (row: FinanceGridRow, values: Record<string, unknown>, customValues: Record<string, unknown>) => Promise<void>;
+  onSaveBatch: (changes: FinanceGridSave[]) => Promise<void>;
   onAdd: () => Promise<void>;
   onDelete: (row: FinanceGridRow) => Promise<void>;
+  onDeleteBatch: (rows: FinanceGridRow[]) => Promise<void>;
+  onRowsReorder: (orderedIds: string[]) => Promise<void>;
   onError: (error: unknown) => void;
 };
 
@@ -79,11 +95,14 @@ export function FinanceSpreadsheet({
   onOptionsChange,
   onColumnsChange,
   onSave,
+  onSaveBatch,
   onAdd,
   onDelete,
+  onDeleteBatch,
+  onRowsReorder,
   onError,
 }: Props) {
-  const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [drafts, setDrafts, undoDrafts, redoDrafts, canUndoDrafts, canRedoDrafts] = useUndoRedo<Record<string, Record<string, string>>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [addingRow, setAddingRow] = useState(false);
   const [newColumnName, setNewColumnName] = useState("");
@@ -91,6 +110,7 @@ export function FinanceSpreadsheet({
   const [selectedColumnKey, setSelectedColumnKey] = useState("");
   const [propertiesColumnKey, setPropertiesColumnKey] = useState<string | null>(null);
   const [busyDeleteId, setBusyDeleteId] = useState<string | null>(null);
+  const [useExcelGrid, setUseExcelGrid] = useState(true);
   const [selectedRange, setSelectedRange] = useState<{ startRow: number; startColumn: number; endRow: number; endColumn: number } | null>(null);
   const [columnResize, setColumnResize] = useState<{ key: string; width: number } | null>(null);
   const skipNextFocusSelection = useRef(false);
@@ -157,16 +177,7 @@ export function FinanceSpreadsheet({
     if (!options.sortKey) return filtered;
     const sortColumn = columns.find((column) => column.key === options.sortKey);
     if (!sortColumn) return filtered;
-    return filtered.sort((left, right) => {
-      const a = computedValues[left.index]?.[sortColumn.key];
-      const b = computedValues[right.index]?.[sortColumn.key];
-      const aNumber = Number(a);
-      const bNumber = Number(b);
-      const compared = sortColumn.type === "number" && Number.isFinite(aNumber) && Number.isFinite(bNumber)
-        ? aNumber - bNumber
-        : String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
-      return options.sortDirection === "desc" ? -compared : compared;
-    });
+    return sortFinanceRows(filtered, ({ index }) => computedValues[index]?.[sortColumn.key], sortColumn.type === "number", options.sortDirection ?? "asc");
   }, [columns, computedValues, options.columnFilterKey, options.columnFilterText, options.filter, options.sortDirection, options.sortKey, rows]);
 
   const updateCell = (rowId: string, column: FinanceGridColumn, value: string) => {
@@ -236,7 +247,7 @@ export function FinanceSpreadsheet({
       window.removeEventListener("pointerup", finishPointerInteraction);
       window.removeEventListener("pointercancel", finishPointerInteraction);
     };
-  }, [canEdit, columns, rawCellValue, visibleRows]);
+  }, [canEdit, columns, rawCellValue, setDrafts, visibleRows]);
   const saveRow = async (row: FinanceGridRow) => {
     const changes = drafts[row.id];
     if (!changes) return;
@@ -386,8 +397,27 @@ export function FinanceSpreadsheet({
     onOptionsChange({ ...options, columnWidths: { ...options.columnWidths, [key]: width } });
   };
 
+  if (useExcelGrid) return <Suspense fallback={<div className="finance-univer-loading" role="status">Loading Excel-style worksheet…</div>}><FinanceUniverGrid
+    rows={rows}
+    columns={columns}
+    customColumns={customColumns}
+    options={options}
+    canEdit={canEdit}
+    onOptionsChange={onOptionsChange}
+    onColumnsChange={onColumnsChange}
+    onSaveBatch={onSaveBatch}
+    onAdd={onAdd}
+    onDeleteBatch={onDeleteBatch}
+    onRowsReorder={onRowsReorder}
+    onError={onError}
+    onBack={() => setUseExcelGrid(false)}
+  /></Suspense>;
+
   return <section className="finance-spreadsheet">
     <div className="finance-spreadsheet-toolbar">
+      <button type="button" className="button secondary" onClick={() => setUseExcelGrid(true)}>Excel-style grid</button>
+      <button type="button" className="button secondary" disabled={!canUndoDrafts} onClick={undoDrafts} aria-label="Undo edit"><Undo2 size={14} /> Undo</button>
+      <button type="button" className="button secondary" disabled={!canRedoDrafts} onClick={redoDrafts} aria-label="Redo edit"><Redo2 size={14} /> Redo</button>
       <label className="spreadsheet-filter">Filter rows<input value={options.filter ?? ""} onChange={(event) => onOptionsChange({ ...options, filter: event.target.value })} placeholder="Search this sheet…" /></label>
       <label className="spreadsheet-filter">Filter column<select value={options.columnFilterKey ?? ""} onChange={(event) => onOptionsChange({ ...options, columnFilterKey: event.target.value })}><option value="">Any column</option>{columns.map((column) => <option key={column.key} value={column.key}>{column.label}</option>)}</select></label>
       <label className="spreadsheet-filter">Contains<input value={options.columnFilterText ?? ""} onChange={(event) => onOptionsChange({ ...options, columnFilterText: event.target.value })} placeholder="Filter value" /></label>
@@ -419,6 +449,17 @@ export function FinanceSpreadsheet({
           if (activeRow && activeColumn) updateCell(activeRow.id, activeColumn, event.target.value);
         }}
         onKeyDown={(event) => {
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+            event.preventDefault();
+            if (event.shiftKey) redoDrafts();
+            else undoDrafts();
+            return;
+          }
+          if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+            event.preventDefault();
+            redoDrafts();
+            return;
+          }
           if (event.key === "Enter" && activeRow) {
             event.preventDefault();
             void saveRow(activeRow);
