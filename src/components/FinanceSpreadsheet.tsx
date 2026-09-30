@@ -479,11 +479,12 @@ export function FinanceSpreadsheet({
             const raw = rawCellValue(row, column);
             const computed = computedValues[sourceRowIndex]?.[column.key];
             const formulaResult = typeof raw === "string" && raw.startsWith("=") ? computed : null;
-            const style: React.CSSProperties = {
+            const style = {
               fontWeight: column.bold ? 700 : undefined,
               color: column.color,
               backgroundColor: column.background,
-            };
+              "--spreadsheet-custom-background": column.background,
+            } as React.CSSProperties;
             const isSelected = selectedRange !== null
               && rowIndex >= Math.min(selectedRange.startRow, selectedRange.endRow)
               && rowIndex <= Math.max(selectedRange.startRow, selectedRange.endRow)

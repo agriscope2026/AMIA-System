@@ -21,6 +21,8 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Moon,
+  Sun,
   Table2,
   Trash2,
   Upload,
@@ -32,6 +34,7 @@ import { createManagedUser, createProgram, createWorkflowStep, databaseConfigure
 import type { AnnualProgramAllocation, AppProfile, AuditLog, BeneficiaryRecord, CalendarDayNote, FinanceSheetPreferences, FinanceSheetType, ProcurementItem, ProcurementPlanItem, ProcurementPlanSheet, ProcurementPlanType, ProgramMember } from "./lib/database";
 import { FinanceSpreadsheet } from "./components/FinanceSpreadsheet";
 import type { FinanceGridColumn, FinanceGridOptions, FinanceGridRow } from "./components/FinanceSpreadsheet";
+import { evaluateFinanceFormula } from "./lib/finance-formulas";
 
 type WorkflowStep = {
   id: string;
@@ -204,6 +207,7 @@ type AllocationDraft = {
   remarks: string;
 };
 type DashboardFinancialColumn = "appropriation" | "allotment" | "obligations" | "disbursements" | "accountsPayable" | "cashAdvances" | "liquidation" | "savings" | "activityBudget" | "appBudget";
+type DashboardPlanTotal = { id: string; sheetType: ProcurementPlanType; label: string; total: number; numberFormat?: "default" | "currency" | "percent" };
 
 const createEmptyAllocationDraft = () => ({
   fund_source: "General Appropriations Act (GAA)",
@@ -390,6 +394,10 @@ const emptyProgramConfig: ProgramConfig = {
 };
 
 function App() {
+  const [darkMode, setDarkMode] = useState(() => {
+    const savedTheme = window.localStorage.getItem("amia-theme");
+    return savedTheme ? savedTheme === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
   const [programOptions, setProgramOptions] = useState<ProgramConfig[]>([]);
   const [program, setProgram] = useState<ProgramConfig>(emptyProgramConfig);
   const [steps, setSteps] = useState<WorkflowStep[]>([]);
@@ -512,6 +520,11 @@ function App() {
   const [dashboardChartMetric, setDashboardChartMetric] = useState<DashboardChartMetric | null>(null);
   const [dashboardStatusDialog, setDashboardStatusDialog] = useState<string | null>(null);
   const [dashboardFinancialColumns, setDashboardFinancialColumns] = useState<DashboardFinancialColumn[]>(["appropriation", "allotment", "obligations", "disbursements", "activityBudget", "appBudget"]);
+  const [dashboardActivityColumns, setDashboardActivityColumns] = useState(["totalActivities", "completedActivities", "notCompletedActivities", "overdueActivities"]);
+  const [dashboardPlanTotalColumns, setDashboardPlanTotalColumns] = useState<string[]>([]);
+  const [dashboardPlanTotals, setDashboardPlanTotals] = useState<DashboardPlanTotal[]>([]);
+  const [dashboardPlanTotalsLoading, setDashboardPlanTotalsLoading] = useState(false);
+  const [dashboardSettingsTab, setDashboardSettingsTab] = useState<"annual" | "APP" | "WFP" | "PPMP" | "activities">("annual");
   const [dashboardAppBudgetsByProgram, setDashboardAppBudgetsByProgram] = useState<Record<string, number>>({});
   const [showDashboardCardSettings, setShowDashboardCardSettings] = useState(false);
   const [procurementItems, setProcurementItems] = useState<ProcurementItem[]>([]);
@@ -605,6 +618,24 @@ function App() {
     { id: "activityBudget", label: "Approved activity budget", value: dashboardYearActivityBudget, detail: "Across matching activities", metric: "activityBudget" },
     { id: "appBudget", label: "APP planned procurement", value: dashboardAppBudget, detail: `FY ${dashboardYear} estimated contract amounts`, metric: "appBudget" },
   ];
+  const dashboardActivityCardOptions: Array<{ id: string; label: string; value: number; detail: string; metric: DashboardChartMetric }> = [
+    { id: "totalActivities", label: "Total activities", value: dashboardTotals.activities, detail: "All registered activities", metric: "totalActivities" },
+    { id: "completedActivities", label: "Completed activities", value: dashboardTotals.completed, detail: `${dashboardTotals.activities ? Math.round(dashboardTotals.completed / dashboardTotals.activities * 100) : 0}% of total`, metric: "completedActivities" },
+    { id: "notCompletedActivities", label: "Not completed", value: dashboardTotals.activities - dashboardTotals.completed, detail: "Still in the workflow", metric: "notCompletedActivities" },
+    { id: "overdueActivities", label: "Overdue activities", value: dashboardTotals.overdue, detail: "Past target end date", metric: "overdueActivities" },
+  ];
+  const dashboardSettingsTabs: Array<{ id: typeof dashboardSettingsTab; label: string }> = [
+    { id: "annual", label: "Annual finance" },
+    { id: "APP", label: "APP" },
+    { id: "WFP", label: "WFP" },
+    { id: "PPMP", label: "PPMP" },
+    { id: "activities", label: "Activities" },
+  ];
+  const formatDashboardPlanTotal = (total: DashboardPlanTotal) => {
+    if (total.numberFormat === "currency") return formatDashboardCurrency(total.total);
+    if (total.numberFormat === "percent") return `${(total.total * 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
+    return total.total.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  };
   const dashboardProgramCount = systemRole === "superadmin" && dashboardProgramFilter === "all" ? programOptions.length : 1;
   const dashboardScopeLabel = systemRole === "superadmin"
     ? dashboardProgramFilter === "all" ? "All programs" : programOptions.find((item) => item.id === dashboardProgramFilter)?.acronym ?? "Selected program"
@@ -762,6 +793,11 @@ function App() {
       setDatabaseLoading(false);
     }
   };
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = darkMode ? "dark" : "light";
+    window.localStorage.setItem("amia-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
 
   useEffect(() => {
     if (!databaseConfigured) return;
@@ -933,6 +969,76 @@ function App() {
     void loadBudgets();
     return () => { currentRequest = false; };
   }, [dashboardProgramFilter, dashboardYear, program.id, programOptions, systemRole]);
+
+  useEffect(() => {
+    if (!databaseConfigured || !programOptions.length || activeTab !== "dashboard") return;
+    let currentRequest = true;
+    const selectedPrograms = systemRole === "superadmin"
+      ? dashboardProgramFilter === "all" ? programOptions : programOptions.filter((item) => item.id === dashboardProgramFilter)
+      : programOptions.filter((item) => item.id === program.id);
+    const loadPlanTotals = async () => {
+      setDashboardPlanTotalsLoading(true);
+      try {
+        const totalsByColumn = new Map<string, DashboardPlanTotal>();
+        await Promise.all(selectedPrograms.flatMap((selectedProgram) =>
+          (["APP", "WFP", "PPMP"] as const).map(async (sheetType) => {
+            const [{ items }, preferences] = await Promise.all([
+              loadProcurementPlanSheet(selectedProgram.id, dashboardYear, sheetType),
+              loadFinanceSheetPreferences(selectedProgram.id, dashboardYear, sheetType),
+            ]);
+            const sheetColumns = preferences?.custom_columns ?? [];
+            const numericColumns = sheetColumns.map((column, columnIndex) => ({ column, columnIndex }))
+              .filter(({ column }) => column.type === "number");
+            const computedCell = (rowIndex: number, columnIndex: number, stack = new Set<string>()): unknown => {
+              const row = items[rowIndex];
+              const column = sheetColumns[columnIndex];
+              if (!row || !column) return 0;
+              const key = `${row.id}:${column.id}`;
+              const raw = row.custom_values?.[column.id];
+              if (typeof raw !== "string" || !raw.startsWith("=")) return raw;
+              if (stack.has(key)) return "#CYCLE";
+              const nextStack = new Set(stack).add(key);
+              return evaluateFinanceFormula(raw, (referenceRow, referenceColumn) =>
+                computedCell(referenceRow, referenceColumn, nextStack));
+            };
+            numericColumns.forEach(({ column, columnIndex }) => {
+              const normalizedLabel = column.label.trim().toLocaleLowerCase();
+              if (!normalizedLabel) return;
+              const id = `${sheetType}:${normalizedLabel}`;
+              const total = items.reduce((sum, _row, rowIndex) => {
+                const value = computedCell(rowIndex, columnIndex);
+                if (typeof value === "number" && Number.isFinite(value)) return sum + value;
+                if (typeof value === "string" && value.trim() && !value.startsWith("#")) {
+                  const percentInput = value.trim().endsWith("%");
+                  const parsed = Number(value.replace(/[₱,\s%]/g, ""));
+                  if (Number.isFinite(parsed)) return sum + (percentInput ? parsed / 100 : parsed);
+                }
+                return sum;
+              }, 0);
+              const existing = totalsByColumn.get(id);
+              totalsByColumn.set(id, {
+                id,
+                sheetType,
+                label: column.label.trim(),
+                total: (existing?.total ?? 0) + total,
+                numberFormat: column.numberFormat,
+              });
+            });
+          }),
+        ));
+        if (currentRequest) setDashboardPlanTotals(Array.from(totalsByColumn.values()).sort((left, right) =>
+          left.sheetType.localeCompare(right.sheetType) || left.label.localeCompare(right.label)));
+      } catch (error) {
+        if (currentRequest) setNotice(error instanceof Error
+          ? `Could not load dashboard worksheet totals: ${error.message}`
+          : "Could not load dashboard worksheet totals");
+      } finally {
+        if (currentRequest) setDashboardPlanTotalsLoading(false);
+      }
+    };
+    void loadPlanTotals();
+    return () => { currentRequest = false; };
+  }, [activeTab, dashboardProgramFilter, dashboardYear, program.id, programOptions, systemRole]);
 
   useEffect(() => {
     if (!databaseConfigured || !showActivityDialog || !selectedActivityId) return;
@@ -2446,6 +2552,16 @@ function App() {
             </label>}
           </div>
           <div className="top-actions">
+            <button
+              className="icon-button theme-toggle"
+              type="button"
+              aria-label={`Switch to ${darkMode ? "light" : "dark"} mode`}
+              aria-pressed={darkMode}
+              title={`Switch to ${darkMode ? "light" : "dark"} mode`}
+              onClick={() => setDarkMode((current) => !current)}
+            >
+              {darkMode ? <Sun size={17} /> : <Moon size={17} />}
+            </button>
             <nav className="top-nav" aria-label="Program builder views">
               <button
                 className={
@@ -2563,9 +2679,18 @@ function App() {
                 <span className="dashboard-filter-scope">Showing {dashboardScopeLabel}</span>
               </div>
               <section className="dashboard-metric-section dashboard-financial-metrics">
-                <div className="dashboard-metric-heading"><div><p className="eyebrow">Financial overview · FY {dashboardYear}</p><h2>Budget and expenditure</h2></div><div className="dashboard-finance-heading-actions"><span className="dashboard-muted">{dashboardYearAllocations.length} allocation record{dashboardYearAllocations.length === 1 ? "" : "s"} · {dashboardScopeLabel}</span><div className="dashboard-card-settings"><button type="button" className="icon-button" aria-label="Financial card settings" aria-expanded={showDashboardCardSettings} onClick={() => setShowDashboardCardSettings((visible) => !visible)}><Settings size={16} /></button>{showDashboardCardSettings && <div className="dashboard-card-settings-menu" aria-label="Choose financial cards"><strong>Show financial cards</strong>{dashboardFinancialCardOptions.map((card) => <label key={card.id}><input type="checkbox" checked={dashboardFinancialColumns.includes(card.id)} onChange={(event) => setDashboardFinancialColumns((current) => event.target.checked ? [...current, card.id] : current.filter((item) => item !== card.id))} /><span>{card.label}</span></label>)}</div>}</div></div></div>
+                <div className="dashboard-metric-heading"><div><p className="eyebrow">Financial overview · FY {dashboardYear}</p><h2>Budget and expenditure</h2></div><div className="dashboard-finance-heading-actions"><span className="dashboard-muted">{dashboardYearAllocations.length} allocation record{dashboardYearAllocations.length === 1 ? "" : "s"} · {dashboardScopeLabel}</span><div className="dashboard-card-settings"><button type="button" className="icon-button" aria-label="Dashboard card settings" aria-expanded={showDashboardCardSettings} onClick={() => setShowDashboardCardSettings((visible) => !visible)}><Settings size={16} /></button>{showDashboardCardSettings && <div className="dashboard-card-settings-menu dashboard-card-settings-tabs" aria-label="Choose dashboard cards"><strong>Dashboard cards</strong><div className="dashboard-settings-tab-list" role="tablist" aria-label="Dashboard card categories">{dashboardSettingsTabs.map((tab) => <button type="button" role="tab" key={tab.id} className={dashboardSettingsTab === tab.id ? "active" : ""} aria-selected={dashboardSettingsTab === tab.id} onClick={() => setDashboardSettingsTab(tab.id)}>{tab.label}</button>)}</div>
+                  {dashboardSettingsTab === "annual" && dashboardFinancialCardOptions.map((card) => <label key={card.id}><input type="checkbox" checked={dashboardFinancialColumns.includes(card.id)} onChange={(event) => setDashboardFinancialColumns((current) => event.target.checked ? [...current, card.id] : current.filter((item) => item !== card.id))} /><span>{card.label}</span></label>)}
+                  {(["APP", "WFP", "PPMP"] as const).includes(dashboardSettingsTab as ProcurementPlanType) && <>
+                    {dashboardPlanTotalsLoading && <span className="dashboard-settings-empty">Loading numeric column totals…</span>}
+                    {!dashboardPlanTotalsLoading && !dashboardPlanTotals.some((column) => column.sheetType === dashboardSettingsTab) && <span className="dashboard-settings-empty">No numeric columns are available in this worksheet for FY {dashboardYear}.</span>}
+                    {dashboardPlanTotals.filter((column) => column.sheetType === dashboardSettingsTab).map((column) => <label key={column.id}><input type="checkbox" checked={dashboardPlanTotalColumns.includes(column.id)} onChange={(event) => setDashboardPlanTotalColumns((current) => event.target.checked ? [...current, column.id] : current.filter((item) => item !== column.id))} /><span>{column.label} total</span></label>)}
+                  </>}
+                  {dashboardSettingsTab === "activities" && dashboardActivityCardOptions.map((card) => <label key={card.id}><input type="checkbox" checked={dashboardActivityColumns.includes(card.id)} onChange={(event) => setDashboardActivityColumns((current) => event.target.checked ? [...current, card.id] : current.filter((item) => item !== card.id))} /><span>{card.label}</span></label>)}
+                </div>}</div></div></div>
                 <div className="dashboard-metric-grid">
                   {dashboardFinancialCardOptions.filter((card) => dashboardFinancialColumns.includes(card.id)).map((card) => <button type="button" key={card.id} className={`dashboard-card dashboard-card-button ${card.id === "appropriation" ? "dashboard-financial-highlight" : ""}`} onClick={() => setDashboardChartMetric(card.metric)}><span className="dashboard-label">{card.label}</span><strong>{formatDashboardCurrency(card.value)}</strong><small>{card.detail} · View chart</small></button>)}
+                  {dashboardPlanTotals.filter((column) => dashboardPlanTotalColumns.includes(column.id)).map((column) => <article className="dashboard-card dashboard-plan-total-card" key={column.id}><span className="dashboard-label">{column.sheetType} · {column.label} total</span><strong>{formatDashboardPlanTotal(column)}</strong><small>Worksheet column total · FY {dashboardYear}</small></article>)}
                 </div>
                 <div className="dashboard-visualizations">
                   <div className="chart-block">
@@ -2588,10 +2713,7 @@ function App() {
               <section className="dashboard-metric-section dashboard-activity-metrics">
                 <div className="dashboard-metric-heading"><div><p className="eyebrow">Operational overview</p><h2>Activity overview</h2></div><span className="dashboard-muted">{dashboardActivities.length} matching activities · {dashboardScopeLabel}</span></div>
                 <div className="dashboard-metric-grid">
-                  <button type="button" className="dashboard-card dashboard-total dashboard-card-button" onClick={() => setDashboardChartMetric("totalActivities")}><span className="dashboard-label">Total activities</span><strong>{dashboardTotals.activities}</strong><small>All registered activities · View chart</small></button>
-                  <button type="button" className="dashboard-card dashboard-card-button" onClick={() => setDashboardChartMetric("completedActivities")}><span className="dashboard-label">Completed activities</span><strong>{dashboardTotals.completed}</strong><small>{dashboardTotals.activities ? Math.round(dashboardTotals.completed / dashboardTotals.activities * 100) : 0}% of total · View chart</small></button>
-                  <button type="button" className="dashboard-card dashboard-card-button" onClick={() => setDashboardChartMetric("notCompletedActivities")}><span className="dashboard-label">Not completed</span><strong>{dashboardTotals.activities - dashboardTotals.completed}</strong><small>Still in the workflow · View chart</small></button>
-                  <button type="button" className="dashboard-card dashboard-overdue dashboard-card-button" onClick={() => setDashboardChartMetric("overdueActivities")}><span className="dashboard-label">Overdue activities</span><strong>{dashboardTotals.overdue}</strong><small>Past target end date · View chart</small></button>
+                  {dashboardActivityCardOptions.filter((card) => dashboardActivityColumns.includes(card.id)).map((card) => <button type="button" key={card.id} className={`dashboard-card dashboard-card-button ${card.id === "totalActivities" ? "dashboard-total" : card.id === "overdueActivities" ? "dashboard-overdue" : ""}`} onClick={() => setDashboardChartMetric(card.metric)}><span className="dashboard-label">{card.label}</span><strong>{card.value}</strong><small>{card.detail} · View chart</small></button>)}
                 </div>
               </section>
               <section className="dashboard-panel dashboard-analytics-panel"><div className="dashboard-panel-heading"><div><p className="eyebrow">Operational analytics</p><h2>Activity status distribution</h2></div><span className="dashboard-muted">{dashboardTotals.activities} activities · {dashboardScopeLabel}</span></div><div className="chart-block"><div className="chart-heading"><strong>Activities by status</strong><span>Click a status to view activities</span></div><div className="status-bars">{dashboardStatusSummary.map((status) => <button type="button" className="status-bar-row dashboard-status-button" key={status.label} title={`View ${status.count} ${status.label} activities`} onClick={() => setDashboardStatusDialog(status.label)}><span>{status.label}</span><div className="status-bar-track"><i className={status.className} style={{ width: `${dashboardTotals.activities ? (status.count / dashboardTotals.activities) * 100 : 0}%` }} /></div><b>{status.count}</b></button>)}</div></div></section>

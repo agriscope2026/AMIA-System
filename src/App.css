@@ -306,6 +306,220 @@
 .finance-table td small { display: block; margin-top: 4px; color: #94a099; }
 .finance-sheet-tabs { display: flex; gap: 6px; border-bottom: 1px solid #dce6de; }
 .finance-sheet-tab { min-width: 75px; border: 1px solid #dce6de; border-bottom: 0; border-radius: 5px 5px 0 0; padding: 7px 13px; background: #f5f8f5; color: #74827a; font-size: 11px; font-weight: 700; cursor: pointer; }
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #e2e9e5;
+  --muted: #a3b0aa;
+  --line: #34443e;
+  --paper: #202c27;
+  --soft: #26332d;
+}
+:root[data-theme="dark"],
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] #root { background: #17211d; color: #e2e9e5; }
+:root[data-theme="dark"] .app-shell { background: #17211d; color: #e2e9e5; }
+:root[data-theme="dark"] .main-content { background: #17211d; }
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .builder-panel,
+:root[data-theme="dark"] .preview-card,
+:root[data-theme="dark"] .step-detail,
+:root[data-theme="dark"] .database-browser,
+:root[data-theme="dark"] .finance-toolbar,
+:root[data-theme="dark"] .finance-card,
+:root[data-theme="dark"] .auth-card,
+:root[data-theme="dark"] .beneficiary-dialog,
+:root[data-theme="dark"] .beneficiary-delete-dialog,
+:root[data-theme="dark"] .activity-dialog,
+:root[data-theme="dark"] .step-dialog,
+:root[data-theme="dark"] .program-create-dialog,
+:root[data-theme="dark"] .program-detail-dialog,
+:root[data-theme="dark"] .profile-dialog,
+:root[data-theme="dark"] .confirm-dialog,
+:root[data-theme="dark"] .allocation-dialog > .finance-card {
+  border-color: #34443e;
+  background-color: #202c27;
+  color: #e2e9e5;
+}
+:root[data-theme="dark"] .page-heading h1,
+:root[data-theme="dark"] .section-title h2,
+:root[data-theme="dark"] .section-title h3,
+:root[data-theme="dark"] .preview-heading h2,
+:root[data-theme="dark"] .detail-heading h2,
+:root[data-theme="dark"] .dashboard-panel-heading h2,
+:root[data-theme="dark"] .database-browser-header h2,
+:root[data-theme="dark"] .beneficiary-toolbar h2,
+:root[data-theme="dark"] .activity-toolbar h2,
+:root[data-theme="dark"] .finance-card .section-title h3,
+:root[data-theme="dark"] .breadcrumbs strong,
+:root[data-theme="dark"] .auth-card h1,
+:root[data-theme="dark"] .app-shell :is(label, p, span, strong, small, li, th, td, summary, output, .breadcrumbs, .workflow-row, .activity-card, .timeline-step, .timeline-substep, .settings-row, .database-records-heading) {
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell :is(.eyebrow, .dashboard-label, .finance-summary-grid strong, .beneficiary-summary strong, .status-tag, .activity-view.active) {
+  color: #9dc8ad;
+}
+:root[data-theme="dark"] .page-intro,
+:root[data-theme="dark"] .section-title p,
+:root[data-theme="dark"] .activity-toolbar p:not(.eyebrow),
+:root[data-theme="dark"] .beneficiary-toolbar p:not(.eyebrow),
+:root[data-theme="dark"] .dashboard-muted,
+:root[data-theme="dark"] .dashboard-label + small,
+:root[data-theme="dark"] .finance-card .section-title p,
+:root[data-theme="dark"] .finance-summary-grid small,
+:root[data-theme="dark"] .finance-summary-grid span,
+:root[data-theme="dark"] .database-browser-header p:not(.eyebrow),
+:root[data-theme="dark"] .database-table-button span,
+:root[data-theme="dark"] .database-records-heading span,
+:root[data-theme="dark"] .beneficiary-summary small,
+:root[data-theme="dark"] .beneficiary-table td small,
+:root[data-theme="dark"] .beneficiary-toolbar p,
+:root[data-theme="dark"] .finance-spreadsheet-status,
+:root[data-theme="dark"] .spreadsheet-format-toolbar > span {
+  color: #9eaea5;
+}
+:root[data-theme="dark"] .dashboard-program-panel,
+:root[data-theme="dark"] .dashboard-panel,
+:root[data-theme="dark"] .dashboard-financial-metrics,
+:root[data-theme="dark"] .dashboard-activity-metrics,
+:root[data-theme="dark"] .dashboard-analytics-panel,
+:root[data-theme="dark"] .dashboard-filter-bar,
+:root[data-theme="dark"] .activities-layout .activity-panel,
+:root[data-theme="dark"] .activities-layout .activity-toolbar,
+:root[data-theme="dark"] .beneficiaries-layout .beneficiary-page,
+:root[data-theme="dark"] .beneficiaries-layout .beneficiary-toolbar,
+:root[data-theme="dark"] .beneficiaries-layout .beneficiary-summary > div,
+:root[data-theme="dark"] .finance-page .finance-toolbar,
+:root[data-theme="dark"] .finance-page .finance-summary-grid article,
+:root[data-theme="dark"] .finance-page .finance-sheet-tabs,
+:root[data-theme="dark"] .finance-page .app-plan-header,
+:root[data-theme="dark"] .finance-page .app-plan-card,
+:root[data-theme="dark"] .calendar-page,
+:root[data-theme="dark"] .calendar-page .calendar-toolbar,
+:root[data-theme="dark"] .calendar-page .calendar-legend,
+:root[data-theme="dark"] .calendar-page .calendar-unscheduled,
+:root[data-theme="dark"] .settings-panel,
+:root[data-theme="dark"] .settings-panel > .section-title,
+:root[data-theme="dark"] .settings-panel .settings-switcher {
+  border-color: #394a42;
+  background-color: #26332d;
+}
+:root[data-theme="dark"] .dashboard-card,
+:root[data-theme="dark"] .dashboard-activity-card,
+:root[data-theme="dark"] .dashboard-chart,
+:root[data-theme="dark"] .activity-card,
+:root[data-theme="dark"] .activity-table-wrap,
+:root[data-theme="dark"] .beneficiaries-layout .beneficiary-table-wrap,
+:root[data-theme="dark"] .beneficiary-intervention-picker,
+:root[data-theme="dark"] .beneficiary-intervention-picker label,
+:root[data-theme="dark"] .database-table-button,
+:root[data-theme="dark"] .database-record,
+:root[data-theme="dark"] .settings-row,
+:root[data-theme="dark"] .workflow-row,
+:root[data-theme="dark"] .timeline-summary div,
+:root[data-theme="dark"] .program-summary-card,
+:root[data-theme="dark"] .finance-summary-grid article {
+  border-color: #394a42;
+  background-color: #202c27;
+}
+:root[data-theme="dark"] .app-shell input:not([type="color"]):not([type="file"]),
+:root[data-theme="dark"] .app-shell select,
+:root[data-theme="dark"] .app-shell textarea,
+:root[data-theme="dark"] .app-shell .spreadsheet-filter input,
+:root[data-theme="dark"] .app-shell .spreadsheet-filter select,
+:root[data-theme="dark"] .app-shell .spreadsheet-new-column input,
+:root[data-theme="dark"] .app-shell .spreadsheet-new-column select,
+:root[data-theme="dark"] .app-shell .spreadsheet-format-toolbar select,
+:root[data-theme="dark"] .app-shell .spreadsheet-formula-input {
+  border-color: #46584f;
+  background-color: #18231e;
+  color: #e2e9e5;
+}
+:root[data-theme="dark"] .app-shell input:disabled,
+:root[data-theme="dark"] .app-shell select:disabled,
+:root[data-theme="dark"] .app-shell textarea:disabled {
+  border-color: #394a42;
+  background-color: #26332d;
+  color: #a3b0aa;
+}
+:root[data-theme="dark"] .app-shell input:focus,
+:root[data-theme="dark"] .app-shell select:focus,
+:root[data-theme="dark"] .app-shell textarea:focus {
+  border-color: #79aa91;
+  background-color: #202c27;
+  box-shadow: 0 0 0 3px #79aa9126;
+}
+:root[data-theme="dark"] .button.secondary,
+:root[data-theme="dark"] .icon-button,
+:root[data-theme="dark"] .theme-toggle {
+  border-color: #46584f;
+  background-color: #26332d;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .button.secondary:hover,
+:root[data-theme="dark"] .icon-button:hover,
+:root[data-theme="dark"] .theme-toggle:hover {
+  border-color: #79aa91;
+  background-color: #314139;
+  color: #b6ddc3;
+}
+:root[data-theme="dark"] .database-record pre,
+:root[data-theme="dark"] .beneficiaries-layout .beneficiary-table th,
+:root[data-theme="dark"] .finance-table th,
+:root[data-theme="dark"] .finance-spreadsheet-grid thead .spreadsheet-column-letters th {
+  border-color: #394a42;
+  background-color: #2a3932;
+  color: #b9c9c0;
+}
+:root[data-theme="dark"] .beneficiary-table td,
+:root[data-theme="dark"] .finance-table td,
+:root[data-theme="dark"] .finance-spreadsheet-grid th,
+:root[data-theme="dark"] .finance-spreadsheet-grid td {
+  border-color: #35453e;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .finance-spreadsheet-wrap {
+  border-color: #46584f;
+  background-color: #202c27;
+}
+:root[data-theme="dark"] .finance-spreadsheet-grid thead th,
+:root[data-theme="dark"] .finance-spreadsheet-grid thead .spreadsheet-column-labels th,
+:root[data-theme="dark"] .spreadsheet-column-resize {
+  border-color: #394a42;
+  background-color: #2d3c34;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .finance-spreadsheet-grid thead th.spreadsheet-column-active,
+:root[data-theme="dark"] .spreadsheet-column-resize:hover {
+  background-color: #3b5747;
+}
+:root[data-theme="dark"] .finance-spreadsheet-grid tbody td.spreadsheet-cell-banded {
+  background-color: #25322c;
+}
+:root[data-theme="dark"] .finance-spreadsheet-grid tbody td textarea:focus {
+  background-color: #26332d;
+}
+:root[data-theme="dark"] .spreadsheet-column-properties {
+  border-color: #46584f;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .spreadsheet-format-toolbar,
+:root[data-theme="dark"] .database-record pre,
+:root[data-theme="dark"] .activity-form {
+  border-color: #394a42;
+  background-color: #26332d;
+}
+:root[data-theme="dark"] .beneficiary-table tbody tr:hover,
+:root[data-theme="dark"] .finance-table tbody tr:hover {
+  background-color: #293830;
+}
+:root[data-theme="dark"] .auth-shell,
+:root[data-theme="dark"] .database-setup-required {
+  background-color: #17211d;
+  color: #e2e9e5;
+}
+:root[data-theme="dark"] .theme-toggle { flex: 0 0 auto; }
 .finance-sheet-tab.active { background: #fff; color: var(--program-primary); box-shadow: 0 -2px 0 var(--program-primary) inset; }
 .app-plan-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .app-plan-header h3 { margin: 0; color: #253b32; font-size: 20px; }
@@ -450,6 +664,13 @@
 .dashboard-card-settings-menu > strong { padding-bottom: 8px; border-bottom: 1px solid #edf1ed; color: #405b4e; font-size: 12px; }
 .dashboard-card-settings-menu label { display: flex; align-items: center; gap: 8px; color: #617369; font-size: 11px; cursor: pointer; }
 .dashboard-card-settings-menu input { width: 14px; height: 14px; margin: 0; accent-color: #43835b; }
+.dashboard-card-settings-tabs { width: min(360px, calc(100vw - 36px)); }
+.dashboard-settings-tab-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; padding-bottom: 7px; border-bottom: 1px solid #edf1ed; }
+.dashboard-settings-tab-list button { min-width: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #718278; padding: 6px 3px; font-size: 10px; font-weight: 600; cursor: pointer; }
+.dashboard-settings-tab-list button.active { border-color: #cbdacf; background: #edf5ee; color: #315e42; }
+.dashboard-settings-empty { color: #7a8980; font-size: 11px; line-height: 1.4; }
+.dashboard-plan-total-card { min-width: 0; }
+.dashboard-plan-total-card .dashboard-label { overflow-wrap: anywhere; }
 .finance-spreadsheet-wrap { max-height: 70vh; border: 1px solid #dce6de; border-radius: 7px; background: white; }
 .finance-spreadsheet { border-collapse: separate; border-spacing: 0; font-variant-numeric: tabular-nums; }
 .finance-spreadsheet th { position: sticky; top: 0; z-index: 2; min-width: 125px; padding: 11px 8px; border-right: 1px solid #e0e8e1; border-bottom: 1px solid #dce6de; background: #edf4ee; color: #526b5c; }
@@ -997,4 +1218,899 @@
   .finance-page .app-plan-header-controls label { width: auto; flex: 1 1 120px; }
   .finance-page .app-plan-header-controls input:not([type="checkbox"]),
   .finance-page .app-plan-header-controls select { width: 100%; max-width: none; }
+}
+
+/* Distinct section tints improve scanning while keeping the UI restrained. */
+.dashboard-grid > .dashboard-program-panel {
+  border-top: 4px solid #659575;
+  background: #eaf3ec;
+}
+.dashboard-grid > .dashboard-panel:not(.dashboard-program-panel) {
+  border-top: 4px solid #91a99a;
+  background: #eef3ef;
+}
+.dashboard-financial-metrics {
+  border-top: 4px solid #538568;
+  background: #e6f0e8;
+}
+.dashboard-activity-metrics {
+  border-top: 4px solid #628da2;
+  background: #e7f0f4;
+}
+.dashboard-analytics-panel {
+  border-top: 4px solid #ad8a4d;
+  background: #f4efe3;
+}
+.dashboard-filter-bar {
+  border-color: #d2dfd5;
+  background: #edf3ee;
+}
+.dashboard-financial-metrics .dashboard-card,
+.dashboard-activity-metrics .dashboard-card {
+  border-color: #e1e8e2;
+  background: #fff;
+}
+
+.activities-layout .activity-panel {
+  border-radius: 8px;
+  border: 1px solid #d5e1d8;
+  background: #edf3ee;
+}
+.activities-layout .activity-toolbar {
+  padding: 14px 16px;
+  border: 1px solid #d5e2d8;
+  border-radius: 6px;
+  background: #e3eee5;
+}
+.activities-layout .activity-tabs {
+  padding: 0 12px;
+  border: 1px solid #d8e3da;
+  border-radius: 6px 6px 0 0;
+  background: #eaf1eb;
+}
+.activities-layout .activity-table-wrap {
+  padding: 10px 12px;
+  border: 1px solid #e3e9e4;
+  border-radius: 0 0 6px 6px;
+  background: #fff;
+}
+
+.beneficiaries-layout .beneficiary-page {
+  border: 1px solid #d4e0e5;
+  border-radius: 8px;
+  background: #eaf1f4;
+}
+.beneficiaries-layout .beneficiary-toolbar {
+  padding: 14px 16px;
+  border: 1px solid #d1e0e6;
+  border-radius: 6px;
+  background: #dfeaf0;
+}
+.beneficiaries-layout .beneficiary-summary > div:nth-child(1) {
+  border-color: #cddfd2;
+  background: #e5f0e7;
+}
+.beneficiaries-layout .beneficiary-summary > div:nth-child(2) {
+  border-color: #ccdae2;
+  background: #e5eef3;
+}
+.beneficiaries-layout .beneficiary-summary > div:nth-child(3) {
+  border-color: #e2d8c3;
+  background: #f3eddf;
+}
+.beneficiaries-layout .beneficiary-table-wrap {
+  border-color: #d0dde2;
+  background: #f7fafb;
+}
+.beneficiaries-layout .beneficiary-table th {
+  background: #e3edf0;
+}
+
+.finance-page .finance-toolbar {
+  border-color: #ccded1;
+  background: #e6f0e8;
+}
+.finance-page .finance-summary-grid article:nth-child(4n + 1) {
+  border-color: #cddfd2;
+  background: #e6f0e8;
+}
+.finance-page .finance-summary-grid article:nth-child(4n + 2) {
+  border-color: #cedde4;
+  background: #e7f0f4;
+}
+.finance-page .finance-summary-grid article:nth-child(4n + 3) {
+  border-color: #e2d9c7;
+  background: #f4efe3;
+}
+.finance-page .finance-summary-grid article:nth-child(4n) {
+  border-color: #d9d2e4;
+  background: #efebf5;
+}
+.finance-page .finance-sheet-tabs {
+  padding: 0 8px;
+  border-radius: 6px 6px 0 0;
+  background: #e8efe9;
+}
+.finance-page .app-plan-header {
+  border-left: 4px solid #659575;
+  background: #eaf2eb;
+}
+.finance-page .app-plan-card {
+  border-color: #d2dfd5;
+  background: #f0f5f1;
+}
+
+.calendar-page {
+  border: 1px solid #d3dfe0;
+  border-radius: 8px;
+  background: #eaf1f0;
+}
+.calendar-page .calendar-toolbar {
+  padding: 12px 14px;
+  border: 1px solid #d0dfdc;
+  border-radius: 6px;
+  background: #dfece8;
+}
+.calendar-page .calendar-legend {
+  padding: 8px 11px;
+  border: 1px solid #d8e3e0;
+  border-radius: 5px;
+  background: #f3f8f6;
+}
+.calendar-page .calendar-unscheduled {
+  border-color: #e0d6bf;
+  background: #f3eddf;
+}
+
+.settings-panel {
+  border: 1px solid #d4dce3;
+  border-radius: 8px;
+  background: #edf0f4;
+}
+.settings-panel > .section-title {
+  padding: 14px 16px;
+  border: 1px solid #d3dce4;
+  border-radius: 6px;
+  background: #e2e9f0;
+}
+.settings-panel .settings-switcher {
+  padding: 0 10px;
+  border: 1px solid #d3dce4;
+  border-radius: 6px 6px 0 0;
+  background: #e7edf2;
+}
+.settings-panel .settings-row,
+.settings-panel .program-admin-list,
+.settings-panel .member-invite {
+  border-color: #e2e8e3;
+  background: #fff;
+}
+
+@media (max-width: 700px) {
+  .activities-layout .activity-toolbar,
+  .beneficiaries-layout .beneficiary-toolbar,
+  .calendar-page .calendar-toolbar,
+  .settings-panel > .section-title {
+    padding: 10px 11px;
+  }
+  .activities-layout .activity-panel,
+  .beneficiaries-layout .beneficiary-page,
+  .settings-panel {
+    padding: 14px;
+  }
+}
+
+:root[data-theme="dark"] .app-shell .dashboard-grid > .dashboard-panel,
+:root[data-theme="dark"] .app-shell .dashboard-grid > .dashboard-metric-section,
+:root[data-theme="dark"] .app-shell .dashboard-grid > .dashboard-program-panel,
+:root[data-theme="dark"] .app-shell .dashboard-grid > .dashboard-financial-metrics,
+:root[data-theme="dark"] .app-shell .dashboard-grid > .dashboard-activity-metrics,
+:root[data-theme="dark"] .app-shell .dashboard-grid > .dashboard-analytics-panel,
+:root[data-theme="dark"] .app-shell .dashboard-grid > .dashboard-filter-bar,
+:root[data-theme="dark"] .app-shell .dashboard-grid .dashboard-card,
+:root[data-theme="dark"] .app-shell .dashboard-grid .chart-block,
+:root[data-theme="dark"] .app-shell .dashboard-grid .overdue-row,
+:root[data-theme="dark"] .app-shell .dashboard-grid .finished-row,
+:root[data-theme="dark"] .app-shell .workflow-guide {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .dashboard-grid .empty-state {
+  background-color: #263b30;
+  color: #a9d6b8;
+}
+:root[data-theme="dark"] .app-shell .dashboard-grid .dashboard-chart-value-track,
+:root[data-theme="dark"] .app-shell .dashboard-grid .status-bar-track,
+:root[data-theme="dark"] .app-shell .dashboard-progress-bar {
+  background-color: #36473e;
+}
+:root[data-theme="dark"] .app-shell .dashboard-chart-dialog {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .dashboard-chart-dialog .detail-heading h2,
+:root[data-theme="dark"] .app-shell .dashboard-dialog-chart-row > span:first-child,
+:root[data-theme="dark"] .app-shell .dashboard-dialog-chart-row b {
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .dashboard-chart-dialog-actions {
+  border-color: #394a42;
+}
+:root[data-theme="dark"] .app-shell .dashboard-dialog-chart-row {
+  border: 1px solid #394a42;
+  border-radius: 5px;
+  background-color: #26332d;
+}
+:root[data-theme="dark"] .app-shell .dashboard-dialog-chart-track {
+  background-color: #36473e;
+}
+:root[data-theme="dark"] .app-shell .finance-page .finance-toolbar,
+:root[data-theme="dark"] .app-shell .finance-page .finance-summary-grid article,
+:root[data-theme="dark"] .app-shell .finance-page .finance-sheet-tabs,
+:root[data-theme="dark"] .app-shell .finance-page .finance-card,
+:root[data-theme="dark"] .app-shell .finance-page .app-plan-header,
+:root[data-theme="dark"] .app-shell .finance-page .app-plan-card,
+:root[data-theme="dark"] .app-shell .finance-page .finance-spreadsheet-toolbar,
+:root[data-theme="dark"] .app-shell .finance-page .spreadsheet-formula-bar,
+:root[data-theme="dark"] .app-shell .finance-page .spreadsheet-format-toolbar,
+:root[data-theme="dark"] .app-shell .finance-page .spreadsheet-column-properties,
+:root[data-theme="dark"] .app-shell .finance-page .finance-spreadsheet-wrap,
+:root[data-theme="dark"] .app-shell .finance-page .finance-sheet-empty-hint {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .finance-page .finance-sheet-tab,
+:root[data-theme="dark"] .app-shell .finance-page .finance-sheet-tab.active {
+  border-color: #46584f;
+  background-color: #2a3932;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .finance-page .finance-summary-grid article:nth-child(4n + 1),
+:root[data-theme="dark"] .app-shell .finance-page .finance-summary-grid article:nth-child(4n + 2),
+:root[data-theme="dark"] .app-shell .finance-page .finance-summary-grid article:nth-child(4n + 3),
+:root[data-theme="dark"] .app-shell .finance-page .finance-summary-grid article:nth-child(4n) {
+  background-color: #26332d;
+}
+:root[data-theme="dark"] .app-shell .finance-page .spreadsheet-column-properties input,
+:root[data-theme="dark"] .app-shell .finance-page .spreadsheet-column-properties select,
+:root[data-theme="dark"] .app-shell .finance-page .spreadsheet-format-toolbar select {
+  border-color: #46584f;
+  background-color: #18231e;
+  color: #e2e9e5;
+}
+:root[data-theme="dark"] .app-shell .activities-layout .activity-panel,
+:root[data-theme="dark"] .app-shell .activities-layout .activity-toolbar,
+:root[data-theme="dark"] .app-shell .activities-layout .activity-tabs,
+:root[data-theme="dark"] .app-shell .activities-layout .activity-table-wrap {
+  border-color: #394a42;
+  background-color: #202c27;
+}
+:root[data-theme="dark"] .app-shell .activities-layout .activity-table th,
+:root[data-theme="dark"] .app-shell .beneficiaries-layout .beneficiary-table th {
+  background-color: #2a3932;
+  color: #b9c9c0;
+}
+:root[data-theme="dark"] .app-shell .activities-layout .activity-table td,
+:root[data-theme="dark"] .app-shell .beneficiaries-layout .beneficiary-table td {
+  border-color: #394a42;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .activities-layout .activity-table tbody tr:hover,
+:root[data-theme="dark"] .app-shell .beneficiaries-layout .beneficiary-table tbody tr:hover {
+  background-color: #293830;
+}
+:root[data-theme="dark"] .app-shell .calendar-page,
+:root[data-theme="dark"] .app-shell .calendar-page .calendar-toolbar,
+:root[data-theme="dark"] .app-shell .calendar-page .calendar-legend,
+:root[data-theme="dark"] .app-shell .calendar-month-card,
+:root[data-theme="dark"] .app-shell .calendar-weekdays,
+:root[data-theme="dark"] .app-shell .calendar-day,
+:root[data-theme="dark"] .app-shell .calendar-day.outside-month,
+:root[data-theme="dark"] .app-shell .calendar-page .calendar-unscheduled {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .calendar-weekdays span,
+:root[data-theme="dark"] .app-shell .calendar-day-number,
+:root[data-theme="dark"] .app-shell .calendar-more,
+:root[data-theme="dark"] .app-shell .calendar-unscheduled-summary > small {
+  color: #aebdb4;
+}
+:root[data-theme="dark"] .app-shell .calendar-day.selected {
+  background-color: #294034;
+}
+:root[data-theme="dark"] .app-shell .calendar-day.today .calendar-day-number {
+  color: #fff;
+  background-color: var(--program-primary);
+}
+:root[data-theme="dark"] .app-shell .settings-panel,
+:root[data-theme="dark"] .app-shell .settings-panel > .section-title,
+:root[data-theme="dark"] .app-shell .settings-panel .settings-switcher,
+:root[data-theme="dark"] .app-shell .settings-panel .settings-row,
+:root[data-theme="dark"] .app-shell .settings-panel .program-admin-list,
+:root[data-theme="dark"] .app-shell .settings-panel .member-invite {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .program-dialog-tabs,
+:root[data-theme="dark"] .app-shell .dashboard-card-settings-menu,
+:root[data-theme="dark"] .app-shell .dashboard-progress-settings-menu,
+:root[data-theme="dark"] .app-shell .dashboard-settings-tab-list button.active {
+  border-color: #46584f;
+  background-color: #26332d;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td[style*="--spreadsheet-custom-background"] {
+  background-color: color-mix(in srgb, var(--spreadsheet-custom-background) 30%, #202c27) !important;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td textarea:focus,
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td.spreadsheet-cell-selected textarea {
+  background-color: #26332d !important;
+}
+:root[data-theme="dark"] .app-shell .status-tag,
+:root[data-theme="dark"] .app-shell .calendar-event,
+:root[data-theme="dark"] .app-shell .calendar-event-row {
+  border-color: #46584f;
+}
+:root[data-theme="dark"] .app-shell .status-planning,
+:root[data-theme="dark"] .app-shell .calendar-status-planning {
+  border-color: #806c43 !important;
+  background-color: #403622 !important;
+  color: #ead69d !important;
+}
+:root[data-theme="dark"] .app-shell .status-procurement,
+:root[data-theme="dark"] .app-shell .calendar-status-progress {
+  border-color: #456c82 !important;
+  background-color: #243845 !important;
+  color: #b7d9ea !important;
+}
+:root[data-theme="dark"] .app-shell .status-implementation,
+:root[data-theme="dark"] .app-shell .status-completed,
+:root[data-theme="dark"] .app-shell .calendar-status-completed {
+  border-color: #4f805d !important;
+  background-color: #263c2d !important;
+  color: #b8dfc2 !important;
+}
+:root[data-theme="dark"] .app-shell .status-liquidation,
+:root[data-theme="dark"] .app-shell .status-revision,
+:root[data-theme="dark"] .app-shell .calendar-status-revision {
+  border-color: #8e5650 !important;
+  background-color: #422c29 !important;
+  color: #e9bdb6 !important;
+}
+
+:root[data-theme="dark"] .app-shell .activity-dialog-tabs,
+:root[data-theme="dark"] .app-shell .activity-dialog-tab,
+:root[data-theme="dark"] .app-shell .timeline-dialog-header,
+:root[data-theme="dark"] .app-shell .timeline-dialog-body,
+:root[data-theme="dark"] .app-shell .timeline-summary div,
+:root[data-theme="dark"] .app-shell .workflow-step-picker,
+:root[data-theme="dark"] .app-shell .timeline-substeps,
+:root[data-theme="dark"] .app-shell .activity-program-details div,
+:root[data-theme="dark"] .app-shell .activity-design-panel,
+:root[data-theme="dark"] .app-shell .confirmation-dialog,
+:root[data-theme="dark"] .app-shell .step-dialog .detail-heading,
+:root[data-theme="dark"] .app-shell .step-dialog .form-section,
+:root[data-theme="dark"] .app-shell .step-dialog .detail-grid,
+:root[data-theme="dark"] .app-shell .step-dialog .substeps-editor,
+:root[data-theme="dark"] .app-shell .finance-allocation-editor > .finance-card,
+:root[data-theme="dark"] .app-shell .finance-allocation-editor .annual-allocation-form,
+:root[data-theme="dark"] .app-shell .finance-cell-dialog,
+:root[data-theme="dark"] .app-shell .finance-cell-value {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .activity-dialog-tab {
+  color: #aebdb4;
+}
+:root[data-theme="dark"] .app-shell .activity-dialog-tab.active {
+  border-color: var(--program-primary);
+  color: #b8dfc2;
+}
+:root[data-theme="dark"] .app-shell .timeline-summary small,
+:root[data-theme="dark"] .app-shell .timeline-step-heading small,
+:root[data-theme="dark"] .app-shell .timeline-section-label,
+:root[data-theme="dark"] .app-shell .timeline-substep,
+:root[data-theme="dark"] .app-shell .timeline-substep em,
+:root[data-theme="dark"] .app-shell .activity-program-details small,
+:root[data-theme="dark"] .app-shell .finance-cell-field,
+:root[data-theme="dark"] .app-shell .allocation-form-field,
+:root[data-theme="dark"] .app-shell .annual-allocation-form-heading {
+  color: #b4c4bb;
+}
+:root[data-theme="dark"] .app-shell .timeline-summary strong,
+:root[data-theme="dark"] .app-shell .timeline-step-heading strong,
+:root[data-theme="dark"] .app-shell .activity-program-details strong,
+:root[data-theme="dark"] .app-shell .annual-allocation-form-heading strong,
+:root[data-theme="dark"] .app-shell .finance-cell-dialog .detail-heading h2,
+:root[data-theme="dark"] .app-shell .confirmation-dialog h2 {
+  color: #e2e9e5;
+}
+:root[data-theme="dark"] .app-shell .timeline-substeps {
+  border-left-color: #46584f;
+}
+:root[data-theme="dark"] .app-shell .timeline-marker,
+:root[data-theme="dark"] .app-shell .substep-circle,
+:root[data-theme="dark"] .app-shell .guide-dot {
+  border-color: #52665a;
+  background-color: #293830;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .timeline-step.complete .timeline-marker,
+:root[data-theme="dark"] .app-shell .timeline-substep.complete .substep-circle,
+:root[data-theme="dark"] .app-shell .guide-dot.done {
+  border-color: #568568;
+  background-color: #263c2d;
+  color: #b8dfc2;
+}
+:root[data-theme="dark"] .app-shell .timeline-step.current .timeline-marker,
+:root[data-theme="dark"] .app-shell .timeline-substep.current .substep-circle,
+:root[data-theme="dark"] .app-shell .guide-dot.current {
+  border-color: #997d43;
+  background-color: #403622;
+  color: #ead69d;
+}
+:root[data-theme="dark"] .app-shell .timeline:before,
+:root[data-theme="dark"] .app-shell .guide-track:before {
+  background-color: #46584f;
+}
+:root[data-theme="dark"] .app-shell .workflow-procurement-links {
+  border-color: #46584f;
+  background-color: #26332d;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .workflow-procurement-links > strong,
+:root[data-theme="dark"] .app-shell .workflow-procurement-links b {
+  color: #b8dfc2;
+}
+:root[data-theme="dark"] .app-shell .workflow-procurement-links small,
+:root[data-theme="dark"] .app-shell .workflow-procurement-links > div {
+  color: #aebdb4;
+}
+:root[data-theme="dark"] .app-shell .annual-allocation-form-heading,
+:root[data-theme="dark"] .app-shell .allocation-form-actions,
+:root[data-theme="dark"] .app-shell .finance-cell-actions {
+  border-color: #394a42;
+}
+:root[data-theme="dark"] .app-shell .finance-allocation-editor .finance-card > .section-title,
+:root[data-theme="dark"] .app-shell .finance-cell-dialog .detail-heading {
+  background-color: #202c27;
+}
+:root[data-theme="dark"] .app-shell .finance-cell-value {
+  border-color: #46584f;
+  background-color: #26332d;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .timeline-substep input,
+:root[data-theme="dark"] .app-shell .app-continuing-control input,
+:root[data-theme="dark"] .app-shell input[type="checkbox"],
+:root[data-theme="dark"] .app-shell input[type="radio"] {
+  accent-color: #76b28b;
+}
+:root[data-theme="dark"] .app-shell .tip-card,
+:root[data-theme="dark"] .app-shell .workflow-guide .tip-card,
+:root[data-theme="dark"] .app-shell .workflow-guide .guide-step em {
+  border-color: #394a42;
+  background-color: #26332d;
+  color: #c2d0c8;
+}
+:root[data-theme="dark"] .app-shell .tip-card strong,
+:root[data-theme="dark"] .app-shell .guide-step strong {
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .tip-card p,
+:root[data-theme="dark"] .app-shell .guide-step small,
+:root[data-theme="dark"] .app-shell .guide-step em {
+  color: #aebdb4;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td[style*="--spreadsheet-custom-background"] {
+  background-color: color-mix(in srgb, var(--spreadsheet-custom-background) 30%, #202c27) !important;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td:not([style*="--spreadsheet-custom-background"]),
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td.spreadsheet-cell-banded:not([style*="--spreadsheet-custom-background"]) {
+  background-color: #202c27;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td.spreadsheet-cell-banded:not([style*="--spreadsheet-custom-background"]) {
+  background-color: #25322c;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td textarea {
+  color: #e2e9e5;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td textarea::placeholder {
+  color: #819188;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody th.spreadsheet-row-number,
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid thead th.spreadsheet-row-number {
+  border-color: #394a42;
+  background-color: #26332d;
+  color: #aebdb4;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td textarea:focus,
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-grid tbody td.spreadsheet-cell-selected textarea {
+  background-color: #314139 !important;
+}
+:root[data-theme="dark"] .app-shell .finance-spreadsheet-toolbar .button.secondary,
+:root[data-theme="dark"] .app-shell .spreadsheet-column-properties .button.secondary {
+  border-color: #46584f;
+  background-color: #2d3c34;
+  color: #d5e0da;
+}
+
+:root[data-theme="dark"] .database-setup-card {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .database-setup-card h1,
+:root[data-theme="dark"] .database-setup-card ol {
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .database-setup-card > p:not(.eyebrow) {
+  color: #aebdb4;
+}
+:root[data-theme="dark"] .database-setup-card code {
+  background-color: #26332d;
+  color: #b8dfc2;
+}
+:root[data-theme="dark"] .database-setup-card .database-setup-warning {
+  border-left-color: #806c43;
+  background-color: #403622;
+  color: #ead69d;
+}
+:root[data-theme="dark"] .app-shell .procurement-form,
+:root[data-theme="dark"] .app-shell .procurement-draft-line,
+:root[data-theme="dark"] .app-shell .workflow-procurement-links {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .procurement-category {
+  background-color: #263c2d;
+  color: #b8dfc2;
+}
+:root[data-theme="dark"] .app-shell .procurement-heading h3,
+:root[data-theme="dark"] .app-shell .procurement-item h4,
+:root[data-theme="dark"] .app-shell .procurement-form-heading h4,
+:root[data-theme="dark"] .app-shell .procurement-draft-line h5,
+:root[data-theme="dark"] .app-shell .procurement-totals strong,
+:root[data-theme="dark"] .app-shell .procurement-item-amount strong,
+:root[data-theme="dark"] .app-shell .workflow-procurement-links > strong,
+:root[data-theme="dark"] .app-shell .workflow-procurement-links b {
+  color: #b8dfc2;
+}
+:root[data-theme="dark"] .app-shell .procurement-heading p:not(.eyebrow),
+:root[data-theme="dark"] .app-shell .procurement-item p,
+:root[data-theme="dark"] .app-shell .procurement-item small,
+:root[data-theme="dark"] .app-shell .procurement-form-heading p,
+:root[data-theme="dark"] .app-shell .workflow-procurement-links > div,
+:root[data-theme="dark"] .app-shell .workflow-procurement-links small {
+  color: #a3b0aa;
+}
+:root[data-theme="dark"] .app-shell .app-plan-table td {
+  border-color: #394a42;
+  background-color: #202c27;
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell .app-plan-table thead tr:nth-child(2) th {
+  border-color: #394a42;
+  background-color: #2a3932;
+  color: #c7d5cc;
+}
+:root[data-theme="dark"] .app-shell .app-plan-table tfoot th,
+:root[data-theme="dark"] .app-shell .app-plan-table tfoot td {
+  border-color: #46584f;
+  background-color: #26332d;
+  color: #d5e0da;
+}
+
+:root[data-theme="dark"] .app-shell dialog[open] {
+  color-scheme: dark;
+  border-color: #394a42 !important;
+  background: #202c27 !important;
+  color: #e2e9e5 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(
+  .activity-dialog-tabs,
+  .timeline-dialog-header,
+  .timeline-dialog-body,
+  .timeline-summary > div,
+  .timeline-substeps,
+  .workflow-step-picker,
+  .workflow-procurement-links,
+  .activity-program-details > div,
+  .activity-design-panel,
+  .annual-allocation-form,
+  .finance-card,
+  .section-title,
+  .detail-heading,
+  .activity-form-heading,
+  .activity-form-actions,
+  .finance-cell-value,
+  .program-dialog-tabs,
+  .program-admins-panel,
+  .member-invite,
+  .account-dialog-form,
+  .dashboard-drilldown-row,
+  .dashboard-drilldown-list,
+  .dashboard-dialog-chart-row
+) {
+  border-color: #394a42 !important;
+  background: #26332d !important;
+  color: #d5e0da !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(
+  h1, h2, h3, h4, h5, p, label, span, strong, small, em, summary, li, th, td, output
+):not(.eyebrow):not(.status-tag):not(.calendar-event):not(.calendar-event-row) {
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(
+  .detail-subtitle,
+  .activity-program-details small,
+  .timeline-summary small,
+  .timeline-step-heading small,
+  .timeline-substep,
+  .finance-card .section-title p,
+  .annual-allocation-form-heading span,
+  .confirmation-message,
+  .finance-cell-field,
+  .allocation-form-field
+) {
+  color: #aebdb4 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="file"]),
+  select,
+  textarea
+) {
+  border-color: #46584f !important;
+  background: #18231e !important;
+  color: #e2e9e5 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(input, select, textarea):disabled {
+  border-color: #394a42 !important;
+  background: #26332d !important;
+  color: #aebdb4 !important;
+  opacity: 1;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .activity-dialog-tab {
+  background: transparent !important;
+  color: #aebdb4 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .activity-dialog-tab.active {
+  border-color: var(--program-primary) !important;
+  color: #b8dfc2 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-substeps,
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-substeps label,
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-substep {
+  background: #26332d !important;
+  color: #d5e0da !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-substep.complete {
+  color: #a9d6b8 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-substep.current {
+  color: #ead69d !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .finance-allocation-editor .annual-allocation-form,
+:root[data-theme="dark"] .app-shell dialog[open] .finance-cell-value,
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-summary > div {
+  background: #26332d !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .calendar-month-card,
+:root[data-theme="dark"] .app-shell dialog[open] .calendar-weekdays,
+:root[data-theme="dark"] .app-shell dialog[open] .calendar-day,
+:root[data-theme="dark"] .app-shell dialog[open] .beneficiary-table-wrap,
+:root[data-theme="dark"] .app-shell dialog[open] .activity-table-wrap {
+  border-color: #394a42 !important;
+  background: #202c27 !important;
+}
+
+:root[data-theme="dark"] .app-shell .superadmin-program-row,
+:root[data-theme="dark"] .app-shell .program-list-row {
+  border-color: #394a42 !important;
+  background: #202c27 !important;
+  color: #d5e0da !important;
+}
+:root[data-theme="dark"] .app-shell .superadmin-program-row:hover,
+:root[data-theme="dark"] .app-shell .superadmin-program-row:focus-visible,
+:root[data-theme="dark"] .app-shell .program-list-row:hover,
+:root[data-theme="dark"] .app-shell .program-list-entry.selected .program-list-row {
+  border-color: #638a70 !important;
+  background: #2a3a31 !important;
+  color: #e2e9e5 !important;
+  outline-color: #79aa91;
+}
+:root[data-theme="dark"] .app-shell .superadmin-program-row :is(strong, small, b, span),
+:root[data-theme="dark"] .app-shell .program-list-row :is(strong, small, span) {
+  color: #d5e0da !important;
+}
+:root[data-theme="dark"] .app-shell .superadmin-program-row .program-row-open-label,
+:root[data-theme="dark"] .app-shell .program-list-row .program-row-open-label,
+:root[data-theme="dark"] .app-shell .superadmin-program-row > span:nth-child(2) small,
+:root[data-theme="dark"] .app-shell .program-list-row small {
+  color: #aebdb4 !important;
+}
+:root[data-theme="dark"] .app-shell .superadmin-program-row .program-summary-copy > svg,
+:root[data-theme="dark"] .app-shell .program-list-mark {
+  border-color: #46584f !important;
+  background: #263c2d !important;
+  color: #a9d6b8 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .button.secondary,
+:root[data-theme="dark"] .app-shell dialog[open] .icon-button,
+:root[data-theme="dark"] .app-shell dialog[open] .quiet-button,
+:root[data-theme="dark"] .app-shell dialog[open] .upload-button {
+  border-color: #46584f !important;
+  background: #2d3c34 !important;
+  color: #d5e0da !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .button.secondary:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .button.secondary:focus-visible,
+:root[data-theme="dark"] .app-shell dialog[open] .icon-button:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .icon-button:focus-visible,
+:root[data-theme="dark"] .app-shell dialog[open] .quiet-button:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .upload-button:hover {
+  border-color: #79aa91 !important;
+  background: #3a5043 !important;
+  color: #ecf6ef !important;
+  outline-color: #79aa91;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .button.primary {
+  border-color: #397b62 !important;
+  background: #267054 !important;
+  color: #fff !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .button.primary:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .button.primary:focus-visible {
+  border-color: #65a184 !important;
+  background: #318466 !important;
+  color: #fff !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .button.danger-outline,
+:root[data-theme="dark"] .app-shell dialog[open] .icon-button.danger {
+  border-color: #81534e !important;
+  background: #3a2927 !important;
+  color: #efb8b1 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .button.danger-outline:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .icon-button.danger:hover {
+  border-color: #bd746b !important;
+  background: #50312e !important;
+  color: #ffe2dd !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] button:disabled,
+:root[data-theme="dark"] .app-shell dialog[open] .button:disabled {
+  border-color: #394a42 !important;
+  background: #26332d !important;
+  color: #819188 !important;
+  opacity: .75;
+  cursor: not-allowed;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .activity-dialog-tab:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .program-dialog-tabs .activity-view:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-step-toggle:hover {
+  background: #2d3c34 !important;
+  color: #e2e9e5 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] input::placeholder,
+:root[data-theme="dark"] .app-shell dialog[open] textarea::placeholder {
+  color: #819188 !important;
+  opacity: 1;
+}
+:root[data-theme="dark"] .app-shell dialog[open] select option {
+  background: #202c27;
+  color: #e2e9e5;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(
+  .activity-form,
+  .form-grid,
+  .detail-grid,
+  .account-dialog-form,
+  .finance-form-grid,
+  .procurement-form-grid,
+  .allocation-form-grid,
+  .beneficiary-form-grid,
+  .substeps-editor
+) {
+  color: #d5e0da;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(
+  .program-create-panel,
+  .settings-row,
+  .member-invite,
+  .beneficiary-intervention-picker,
+  .procurement-form,
+  .procurement-draft-line,
+  .procurement-item,
+  .workflow-procurement-links,
+  .activity-program-details > div
+) {
+  border-color: #394a42 !important;
+  background: #26332d !important;
+  color: #d5e0da !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(
+  .activity-program-details strong,
+  .procurement-item h4,
+  .procurement-form-heading h4,
+  .member-invite h3,
+  .settings-row b
+) {
+  color: #d5e0da !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] :is(
+  .activity-program-details small,
+  .procurement-item p,
+  .procurement-item small,
+  .procurement-form-heading p,
+  .settings-row small
+) {
+  color: #aebdb4 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-substeps label:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .timeline-step-toggle:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .dashboard-drilldown-row:hover,
+:root[data-theme="dark"] .app-shell dialog[open] .dashboard-dialog-chart-row:hover {
+  border-color: #638a70 !important;
+  background: #314139 !important;
+}
+:root[data-theme="dark"] .app-shell .dashboard-card-button:hover,
+:root[data-theme="dark"] .app-shell .dashboard-status-button:hover,
+:root[data-theme="dark"] .app-shell .dashboard-progress-activity-button:hover,
+:root[data-theme="dark"] .app-shell .dashboard-drilldown-row:hover,
+:root[data-theme="dark"] .app-shell .dashboard-dialog-chart-row:hover,
+:root[data-theme="dark"] .app-shell .activity-table tbody tr:hover,
+:root[data-theme="dark"] .app-shell .finance-table tbody tr:hover,
+:root[data-theme="dark"] .app-shell .calendar-event:hover,
+:root[data-theme="dark"] .app-shell .calendar-event-row:hover {
+  border-color: #4a6654 !important;
+  background-color: #2a3a31 !important;
+  color: #e2e9e5 !important;
+}
+:root[data-theme="dark"] .app-shell .dashboard-card-button:hover :is(span, strong, small),
+:root[data-theme="dark"] .app-shell .dashboard-progress-activity-button:hover :is(span, strong, small, b),
+:root[data-theme="dark"] .app-shell .dashboard-drilldown-row:hover :is(span, strong, small, b) {
+  color: #e2e9e5 !important;
+}
+:root[data-theme="dark"] .app-shell .status-tag.status-progress {
+  border-color: #456c82 !important;
+  background-color: #243845 !important;
+  color: #b7d9ea !important;
+}
+:root[data-theme="dark"] .app-shell .status-tag.status-completed {
+  border-color: #4f805d !important;
+  background-color: #263c2d !important;
+  color: #b8dfc2 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open].dashboard-activity-dialog .fund-summary > div {
+  border-color: #394a42 !important;
+  background-color: #26332d !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open].dashboard-activity-dialog .fund-summary small {
+  color: #aebdb4 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open].dashboard-activity-dialog .fund-summary strong {
+  color: #e2e9e5 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open].dashboard-activity-dialog .dashboard-activity-meta {
+  border-color: #394a42 !important;
+  color: #aebdb4 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open].dashboard-activity-dialog .dashboard-activity-meta strong {
+  color: #d5e0da !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open].dashboard-chart-dialog .dashboard-drilldown {
+  border-color: #394a42 !important;
+}
+:root[data-theme="dark"] .app-shell dialog[open].dashboard-chart-dialog .empty-state {
+  border: 1px solid #394a42;
+  background-color: #263b30 !important;
+  color: #b8dfc2 !important;
 }
